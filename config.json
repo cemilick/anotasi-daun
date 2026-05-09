@@ -1,0 +1,45 @@
+{
+  "project_name": "Daun Kelengkeh Itoh",
+  "classes": [
+    { "id": 1, "name": "daun_kelengkeh_itoh", "supercategory": "plant" }
+  ],
+  "instance_colors": [
+    [255, 82, 82], [82, 255, 82], [82, 82, 255],
+    [255, 255, 82], [255, 82, 255], [82, 255, 255],
+    [255, 165, 0],  [128, 0, 128]
+  ],
+  "image_extensions": [".jpg", ".jpeg", ".png", ".bmp"],
+  "paths": {
+    "images": "images",
+    "annotations": "annotations",
+    "annotations_rendah": "annotations/rendah",
+    "annotations_sedang": "annotations/sedang",
+    "annotations_tinggi": "annotations/tinggi",
+    "output_coco": "output/coco",
+    "output_voc": "output/voc",
+    "output_visualized": "output/visualized",
+    "sam_checkpoint": "sam_weights/sam_vit_h_4b8939.pth"
+  },
+  "sam": {
+    "model_type": "vit_h",
+    "device": "cuda",
+    "points_per_side": 32,
+    "pred_iou_thresh": 0.88,
+    "stability_score_thresh": 0.95,
+    "auto_confidence_threshold": 0.75,
+    "min_polygon_area_px": 500,
+    "polygon_simplify_epsilon": 2.0
+  },
+  "canvas": {
+    "default_width": 1200,
+    "default_height": 800,
+    "zoom_step": 0.1,
+    "mask_opacity": 0.45
+  },
+  "dataset_split": {
+    "train": 0.7,
+    "val": 0.2,
+    "test": 0.1,
+    "seed": 42
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(openspec new *)",
+      "Bash(openspec status *)",
+      "Bash(openspec instructions *)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import pip; print\\(pip.__version__\\)\")",
+      "Bash(pip check *)",
+      "Bash(python -m pytest tests/test_image_manager.py -v)",
+      "Bash(pytest tests/test_image_manager.py -v)",
+      "PowerShell(pip show *)",
+      "PowerShell(pip install *)",
+      "PowerShell(cd \"E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\"; $env:PYTHONPATH = \".\"; & \"C:\\\\Users\\\\user\\\\AppData\\\\Roaming\\\\Python\\\\Python311\\\\Scripts\\\\pytest.exe\" tests/test_image_manager.py -v 2>&1)",
+      "Bash(python *)",
+      "Bash(New-Item *)",
+      "PowerShell(New-Item *)",
+      "Bash(pip show *)",
+      "Bash(pip list *)",
+      "Bash(dir /b)",
+      "Bash(findstr /i \"venv env conda\")",
+      "Bash(findstr -i \"opencv pycocotools numpy\")",
+      "Bash(dir E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh *)",
+      "Bash(dir E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\src *)",
+      "Bash(dir \"E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\src\")",
+      "Bash(dir E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\tests *)"
+    ]
+  }
+}

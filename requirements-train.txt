@@ -1,0 +1,6 @@
+# Phase 2 — Training Pipeline
+# Requires requirements.txt to be installed first.
+# torch, torchvision, and pycocotools are already covered there.
+albumentations>=1.3.0
+tensorboard>=2.13.0
+tqdm>=4.65.0
