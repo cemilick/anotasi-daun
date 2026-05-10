@@ -1,6 +1,7 @@
 import argparse
 import logging
 import sys
+import warnings
 from pathlib import Path
 
 from src.config import Config
@@ -16,6 +17,11 @@ def _setup_logging() -> None:
     # Suppress noisy third-party logs
     for noisy in ("PIL", "urllib3", "matplotlib"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    # Suppress harmless warnings from timm / mobile_sam internals
+    warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
+    warnings.filterwarnings("ignore", category=UserWarning, module="mobile_sam")
+    warnings.filterwarnings("ignore", message="Overwriting tiny_vit", category=UserWarning)
 
 
 def _parse_args() -> argparse.Namespace:

@@ -23,7 +23,8 @@
       "Bash(dir E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh *)",
       "Bash(dir E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\src *)",
       "Bash(dir \"E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\src\")",
-      "Bash(dir E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\tests *)"
+      "Bash(dir E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\tests *)",
+      "Bash(pip install *)"
     ]
   }
 }

@@ -18,10 +18,10 @@
     "output_coco": "output/coco",
     "output_voc": "output/voc",
     "output_visualized": "output/visualized",
-    "sam_checkpoint": "sam_weights/sam_vit_h_4b8939.pth"
+    "sam_checkpoint": "sam_weights/mobile_sam.pt"
   },
   "sam": {
-    "model_type": "vit_h",
+    "model_type": "vit_t",
     "device": "cuda",
     "points_per_side": 32,
     "pred_iou_thresh": 0.88,

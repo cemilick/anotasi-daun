@@ -7,7 +7,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 import cv2
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
@@ -48,6 +48,17 @@ except ImportError:
     AutoLabelWorker = None  # type: ignore[assignment,misc]
 
 
+class _ThreadBridge(QObject):
+    """Carries results from a plain Python thread back to the Qt main thread.
+
+    Created on the main thread; when .result or .error is emitted from a
+    background thread, Qt queues the signal and delivers it on the main thread's
+    event loop — no QTimer.singleShot needed.
+    """
+    result = pyqtSignal(list)   # list[Polygon]
+    error  = pyqtSignal(str)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -62,6 +73,9 @@ class MainWindow(QMainWindow):
         self._confidence: float = getattr(
             getattr(config, "sam", None), "auto_confidence_threshold", 0.75
         )
+        # True once load_model() has finished (success or fail) — buttons are
+        # enabled after this regardless of outcome, so user can click and see why
+        self._model_load_attempted: bool = not _HAS_SAM
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -115,6 +129,12 @@ class MainWindow(QMainWindow):
         tb1.addAction(self._act_save)
         tb1.addSeparator()
 
+        self._act_prev = QAction("◀ Prev", self)
+        self._act_next = QAction("Next ▶", self)
+        tb1.addAction(self._act_prev)
+        tb1.addAction(self._act_next)
+        tb1.addSeparator()
+
         self._act_auto_label = QAction("✨ Auto Label", self)
         self._act_auto_all = QAction("⚡ Auto All", self)
         tb1.addAction(self._act_auto_label)
@@ -148,6 +168,8 @@ class MainWindow(QMainWindow):
 
         self._act_open.triggered.connect(self.open_folder)
         self._act_save.triggered.connect(self.save_current)
+        self._act_prev.triggered.connect(self.prev_image)
+        self._act_next.triggered.connect(self.next_image)
         self._act_auto_label.triggered.connect(self.trigger_sam_auto_current)
         self._act_auto_all.triggered.connect(self.trigger_sam_auto_all)
         self._act_draw.triggered.connect(lambda: self._set_mode(CanvasMode.DRAW))
@@ -367,25 +389,32 @@ class MainWindow(QMainWindow):
         confidence = self._confidence
         labeler = self._auto_labeler
 
+        bridge = _ThreadBridge(self)
+
+        def _on_result(polygons: list) -> None:
+            log.info("trigger_sam_auto_current: UI thread menerima %d polygon, inject...", len(polygons))
+            self._canvas.set_loading(False)
+            self._on_sam_result(polygons)
+            log.info("trigger_sam_auto_current: selesai")
+            bridge.deleteLater()
+
+        def _on_error(msg: str) -> None:
+            self._canvas.set_loading(False)
+            QMessageBox.warning(self, "SAM Error", msg)
+            bridge.deleteLater()
+
+        bridge.result.connect(_on_result)
+        bridge.error.connect(_on_error)
+
         def _run() -> None:
             try:
                 polygons = labeler.predict_automatic(image, instance_id_start=start_id)
                 filtered = [p for p in polygons if p.confidence >= confidence]
-                log.info("trigger_sam_auto_current: %d polygon lolos filter confidence %.2f", len(filtered), confidence)
-                log.info("trigger_sam_auto_current: mengirim hasil ke UI thread...")
-                def _done() -> None:
-                    log.info("trigger_sam_auto_current: UI thread menerima hasil, inject polygon...")
-                    self._canvas.set_loading(False)
-                    self._on_sam_result(filtered)
-                    log.info("trigger_sam_auto_current: selesai")
-                QTimer.singleShot(0, _done)
+                log.info("trigger_sam_auto_current: %d polygon lolos filter, mengirim ke UI...", len(filtered))
+                bridge.result.emit(filtered)
             except Exception as exc:
                 log.error("trigger_sam_auto_current: error — %s", exc, exc_info=True)
-                msg = str(exc)
-                def _err() -> None:
-                    self._canvas.set_loading(False)
-                    QMessageBox.warning(self, "SAM Error", msg)
-                QTimer.singleShot(0, _err)
+                bridge.error.emit(str(exc))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -526,20 +555,23 @@ class MainWindow(QMainWindow):
         confidence = self._confidence
         labeler = self._auto_labeler
 
+        bridge = _ThreadBridge(self)
+        bridge.result.connect(lambda polys: (
+            self._canvas.set_loading(False), self._on_sam_result(polys), bridge.deleteLater()
+        ))
+        bridge.error.connect(lambda msg: (
+            self._canvas.set_loading(False),
+            QMessageBox.warning(self, "SAM Error", msg),
+            bridge.deleteLater(),
+        ))
+
         def _run() -> None:
             try:
                 polygons = labeler.predict_from_point(image, (x, y), instance_id_start=start_id)
-                filtered = [p for p in polygons if p.confidence >= confidence]
-                def _done() -> None:
-                    self._canvas.set_loading(False)
-                    self._on_sam_result(filtered)
-                QTimer.singleShot(0, _done)
+                bridge.result.emit([p for p in polygons if p.confidence >= confidence])
             except Exception as exc:
-                msg = str(exc)
-                def _err() -> None:
-                    self._canvas.set_loading(False)
-                    QMessageBox.warning(self, "SAM Error", msg)
-                QTimer.singleShot(0, _err)
+                log.error("predict_from_point: error — %s", exc, exc_info=True)
+                bridge.error.emit(str(exc))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -555,22 +587,25 @@ class MainWindow(QMainWindow):
         confidence = self._confidence
         labeler = self._auto_labeler
 
+        bridge = _ThreadBridge(self)
+        bridge.result.connect(lambda polys: (
+            self._canvas.set_loading(False), self._on_sam_result(polys), bridge.deleteLater()
+        ))
+        bridge.error.connect(lambda msg: (
+            self._canvas.set_loading(False),
+            QMessageBox.warning(self, "SAM Error", msg),
+            bridge.deleteLater(),
+        ))
+
         def _run() -> None:
             try:
                 polygons = labeler.predict_from_box(
                     image, (x1, y1, x2, y2), instance_id_start=start_id
                 )
-                filtered = [p for p in polygons if p.confidence >= confidence]
-                def _done() -> None:
-                    self._canvas.set_loading(False)
-                    self._on_sam_result(filtered)
-                QTimer.singleShot(0, _done)
+                bridge.result.emit([p for p in polygons if p.confidence >= confidence])
             except Exception as exc:
-                msg = str(exc)
-                def _err() -> None:
-                    self._canvas.set_loading(False)
-                    QMessageBox.warning(self, "SAM Error", msg)
-                QTimer.singleShot(0, _err)
+                log.error("predict_from_box: error — %s", exc, exc_info=True)
+                bridge.error.emit(str(exc))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -714,16 +749,19 @@ class MainWindow(QMainWindow):
 
     def _update_sam_controls(self) -> None:
         ready = self._sam_ready()
+        # Enable buttons once load has been attempted (success or failure).
+        # While loading, keep disabled and show "SAM loading…" message.
+        # If load failed, buttons are enabled — clicking shows a helpful error.
+        can_interact = self._model_load_attempted
         for btn in (
             self._btn_point, self._btn_box, self._btn_auto_cur,
             self._btn_accept, self._btn_reject,
         ):
-            btn.setEnabled(ready)
-        self._conf_slider.setEnabled(ready)
-        # Toolbar actions must also reflect readiness
-        self._act_auto_label.setEnabled(ready)
-        self._act_auto_all.setEnabled(ready)
-        if not ready and self._auto_labeler is not None:
+            btn.setEnabled(can_interact)
+        self._conf_slider.setEnabled(can_interact)
+        self._act_auto_label.setEnabled(can_interact)
+        self._act_auto_all.setEnabled(can_interact)
+        if not can_interact:
             self._sb_mode.setText("SAM loading…")
 
     def _set_mode(self, mode: CanvasMode) -> None:
@@ -740,20 +778,21 @@ class MainWindow(QMainWindow):
     def _notify_sam_not_ready(self) -> None:
         if not _HAS_SAM:
             QMessageBox.warning(
-                self, "SAM Tidak Tersedia",
+                self, "MobileSAM Tidak Tersedia",
                 "Modul auto_labeler tidak dapat dimuat.\n\n"
                 "Pastikan dependensi berikut terinstall:\n"
-                "  pip install segment-anything torch torchvision",
+                "  pip install mobile-sam torch torchvision",
             )
             return
         checkpoint = Path(str(self._config.paths.sam_checkpoint))
         if not checkpoint.exists():
             QMessageBox.warning(
-                self, "Checkpoint SAM Tidak Ditemukan",
-                f"File SAM checkpoint tidak ditemukan:\n{checkpoint}\n\n"
-                "Download dari:\n"
-                "  https://github.com/facebookresearch/segment-anything#model-checkpoints\n\n"
-                f"Letakkan file di:\n  {checkpoint.parent}/",
+                self, "Checkpoint MobileSAM Tidak Ditemukan",
+                f"File MobileSAM tidak ditemukan:\n{checkpoint}\n\n"
+                "Download (~40 MB) dari:\n"
+                "  https://github.com/ChaoningZhang/MobileSAM\n"
+                "  (file: weights/mobile_sam.pt)\n\n"
+                f"Letakkan file di:\n  {checkpoint.parent}\\mobile_sam.pt",
             )
         else:
             QMessageBox.information(
@@ -769,11 +808,22 @@ class MainWindow(QMainWindow):
         return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     def _load_model_async(self) -> None:
+        bridge = _ThreadBridge(self)
+
+        def _on_ready(_polys: list) -> None:
+            log.info("_load_model_async: update SAM controls di main thread")
+            self._model_load_attempted = True
+            self._update_sam_controls()
+            bridge.deleteLater()
+
+        bridge.result.connect(_on_ready)
+
         def _load() -> None:
             if self._auto_labeler:
                 self._auto_labeler.load_model()
                 log.info("_load_model_async: model siap, is_loaded=%s", self._auto_labeler.is_loaded())
-                QTimer.singleShot(0, self._update_sam_controls)
+            bridge.result.emit([])
+
         threading.Thread(target=_load, daemon=True).start()
 
     def _on_conf_changed(self, value: int) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Leave one core free for the UI thread
 _CPU_WORKERS = max(1, (os.cpu_count() or 2) - 1)
 
 
@@ -42,7 +41,6 @@ def mask_to_polygon(
 
 
 def _rasterize_mask(args: tuple) -> np.ndarray:
-    """Rasterize one polygon into a binary mask (runs in thread pool)."""
     poly, h, w = args
     mask = np.zeros((h, w), dtype=np.uint8)
     if poly.points:
@@ -52,7 +50,6 @@ def _rasterize_mask(args: tuple) -> np.ndarray:
 
 
 def _compute_overlap(args: tuple) -> float:
-    """Overlap ratio for one polygon against union of all others (runs in thread pool)."""
     own_mask, prefix_union, suffix_union = args
     own_area = int(own_mask.sum())
     if own_area == 0:
@@ -69,7 +66,6 @@ def compute_occlusion_levels(
     h, w = image_shape
     n = len(polygons)
 
-    # --- Phase 1: rasterize all polygon masks in parallel ---
     with ThreadPoolExecutor(max_workers=_CPU_WORKERS) as ex:
         masks = list(ex.map(_rasterize_mask, [(p, h, w) for p in polygons]))
 
@@ -78,9 +74,6 @@ def compute_occlusion_levels(
         polygons[0].occlusion_ratio = 0.0
         return polygons
 
-    # --- Phase 2: prefix-suffix union — O(N) instead of O(N²) ---
-    # prefix[i] = union of masks[0 .. i-1]
-    # suffix[i] = union of masks[i+1 .. n-1]
     prefix = [np.zeros((h, w), dtype=np.uint8) for _ in range(n)]
     suffix = [np.zeros((h, w), dtype=np.uint8) for _ in range(n)]
     for i in range(1, n):
@@ -88,7 +81,6 @@ def compute_occlusion_levels(
     for i in range(n - 2, -1, -1):
         np.bitwise_or(suffix[i + 1], masks[i + 1], out=suffix[i])
 
-    # --- Phase 3: compute overlap ratios in parallel ---
     with ThreadPoolExecutor(max_workers=_CPU_WORKERS) as ex:
         ratios = list(ex.map(
             _compute_overlap,
@@ -107,21 +99,6 @@ def compute_occlusion_levels(
     return polygons
 
 
-def _process_contour(args: tuple) -> tuple[list[tuple[float, float]], float] | None:
-    """Simplify one contour and return (scaled_pts, orig_area) or None (runs in thread pool)."""
-    contour, epsilon, scale, min_area_scaled = args
-    area = cv2.contourArea(contour)
-    if area < min_area_scaled:
-        return None
-    arc = cv2.arcLength(contour, True)
-    eps = max(epsilon * scale, arc * 0.005)
-    approx = cv2.approxPolyDP(contour, eps, True)
-    pts = [(float(p[0][0]) / scale, float(p[0][1]) / scale) for p in approx]
-    if len(pts) < 3:
-        return None
-    return pts, area / (scale ** 2)
-
-
 def _polygon_color(instance_id: int) -> list[int]:
     hue = (instance_id * 137) % 360
     c = QColor.fromHsv(hue, 200, 230)
@@ -136,66 +113,74 @@ def _class_info(config: Config) -> tuple[int, str]:
         return 1, "daun_kelengkeh_itoh"
 
 
-_WORK_SIZE = 1024  # max dimension for HSV processing; contours scaled back up after
-
-
-def _get_plant_mask(image_rgb: np.ndarray) -> tuple[np.ndarray, float]:
-    """Binary mask of green/plant regions via HSV thresholding.
-
-    Internally downscales to _WORK_SIZE to keep morphological ops fast.
-    Returns (mask_at_work_scale, scale_factor) so contours can be rescaled.
-    """
-    h, w = image_rgb.shape[:2]
-    scale = min(1.0, _WORK_SIZE / max(h, w))
-    if scale < 1.0:
-        ww, wh = int(w * scale), int(h * scale)
-        small = cv2.resize(image_rgb, (ww, wh), interpolation=cv2.INTER_AREA)
-    else:
-        small = image_rgb
-        wh, ww = h, w
-
-    hsv = cv2.cvtColor(small, cv2.COLOR_RGB2HSV)
-    mask = cv2.inRange(hsv, np.array([20, 35, 30]), np.array([90, 255, 255]))
-
-    k = max(3, min(wh, ww) // 60)
-    k = k if k % 2 == 1 else k + 1
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    return mask, scale
-
-
-def _grabcut(image_rgb: np.ndarray, rect: tuple[int, int, int, int]) -> np.ndarray:
-    """Run GrabCut with rect=(x, y, w, h); return foreground binary mask."""
-    h, w = image_rgb.shape[:2]
-    gc_mask = np.zeros((h, w), np.uint8)
-    bgd = np.zeros((1, 65), np.float64)
-    fgd = np.zeros((1, 65), np.float64)
-    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    cv2.grabCut(image_bgr, gc_mask, rect, bgd, fgd, 5, cv2.GC_INIT_WITH_RECT)
-    return np.where((gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD), 1, 0).astype(np.uint8)
-
-
 # ---------------------------------------------------------------------------
-# AutoLabeler  (GrabCut + HSV — no model download required)
+# AutoLabeler  (MobileSAM)
 # ---------------------------------------------------------------------------
 
 class AutoLabeler:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._loaded = False
+        self._predictor = None
+        self._generator = None
+
+    # ------------------------------------------------------------------
+    # Model loading
+    # ------------------------------------------------------------------
 
     def load_model(self) -> None:
-        """No external model needed — GrabCut is built into OpenCV."""
-        log.info("AutoLabeler: menggunakan GrabCut + HSV (tidak perlu download model)")
-        self._loaded = True
-        log.info("AutoLabeler: siap digunakan")
+        checkpoint = Path(str(self._config.paths.sam_checkpoint))
+        if not checkpoint.exists():
+            log.warning("AutoLabeler: checkpoint tidak ditemukan: %s", checkpoint)
+            log.warning("AutoLabeler: download dari https://github.com/ChaoningZhang/MobileSAM")
+            log.warning("AutoLabeler: letakkan file mobile_sam.pt di folder: %s", checkpoint.parent)
+            return
+
+        try:
+            from mobile_sam import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
+        except ImportError:
+            log.error("AutoLabeler: mobile-sam belum terinstall — jalankan: pip install mobile-sam")
+            return
+
+        try:
+            sam_cfg = getattr(self._config, "sam", None)
+            model_type = getattr(sam_cfg, "model_type", "vit_t")
+            device = getattr(sam_cfg, "device", "cpu")
+
+            log.info("AutoLabeler: memuat MobileSAM (model_type=%s, device=%s) ...", model_type, device)
+            log.info("AutoLabeler: checkpoint: %s", checkpoint)
+
+            import torch
+            sam = sam_model_registry[model_type](checkpoint=str(checkpoint))
+            try:
+                sam.to(device=device)
+            except RuntimeError:
+                log.warning("AutoLabeler: gagal ke device '%s', fallback ke CPU", device)
+                sam.to(device="cpu")
+                device = "cpu"
+            sam.eval()
+
+            self._predictor = SamPredictor(sam)
+            self._generator = SamAutomaticMaskGenerator(
+                sam,
+                points_per_side=getattr(sam_cfg, "points_per_side", 32),
+                pred_iou_thresh=getattr(sam_cfg, "pred_iou_thresh", 0.88),
+                stability_score_thresh=getattr(sam_cfg, "stability_score_thresh", 0.95),
+                min_mask_region_area=getattr(sam_cfg, "min_polygon_area_px", 500),
+            )
+
+            self._loaded = True
+            log.info("AutoLabeler: MobileSAM siap digunakan (device=%s)", device)
+
+        except Exception as exc:
+            log.error("AutoLabeler: gagal memuat model — %s", exc, exc_info=True)
+            self._loaded = False
 
     def is_loaded(self) -> bool:
         return self._loaded
 
     # ------------------------------------------------------------------
-    # predict_from_point — GrabCut with auto-sized box around click
+    # predict_from_point
     # ------------------------------------------------------------------
 
     def predict_from_point(
@@ -208,23 +193,48 @@ class AutoLabeler:
         if not self._loaded:
             log.warning("predict_from_point dipanggil sebelum load_model()")
             return []
+
         h, w = image.shape[:2]
-        cx, cy = int(point[0]), int(point[1])
-        pad = max(40, min(h, w) // 7)
-        x1, y1 = max(0, cx - pad), max(0, cy - pad)
-        x2, y2 = min(w, cx + pad), min(h, cy + pad)
-        log.debug("GrabCut point (%.0f, %.0f) → box (%d,%d,%d,%d)", cx, cy, x1, y1, x2, y2)
-        if x2 - x1 < 10 or y2 - y1 < 10:
-            log.warning("Box terlalu kecil, skip")
+        log.info("predict_from_point: titik (%.0f, %.0f) pada gambar %dx%d", point[0], point[1], w, h)
+
+        coords = [[point[0], point[1]]]
+        labels = [1]
+        if negative_points:
+            for np_ in negative_points:
+                coords.append([np_[0], np_[1]])
+                labels.append(0)
+
+        try:
+            self._predictor.set_image(image)
+            masks, scores, _ = self._predictor.predict(
+                point_coords=np.array(coords, dtype=float),
+                point_labels=np.array(labels, dtype=int),
+                multimask_output=True,
+            )
+            best_idx = int(np.argmax(scores))
+            epsilon = getattr(getattr(self._config, "sam", None), "polygon_simplify_epsilon", 2.0)
+            pts = mask_to_polygon(masks[best_idx], epsilon)
+            if not pts:
+                log.info("predict_from_point: tidak ada polygon valid")
+                return []
+            class_id, class_name = _class_info(self._config)
+            confidence = float(scores[best_idx])
+            log.info("predict_from_point: 1 polygon, confidence=%.3f", confidence)
+            return [Polygon(
+                instance_id=instance_id_start,
+                class_id=class_id,
+                class_name=class_name,
+                points=pts,
+                color=_polygon_color(instance_id_start),
+                source="sam_point",
+                confidence=confidence,
+            )]
+        except Exception as exc:
+            log.error("predict_from_point: error — %s", exc, exc_info=True)
             return []
-        result = self._grabcut_to_polygons(
-            image, x1, y1, x2 - x1, y2 - y1, instance_id_start, source="sam_point"
-        )
-        log.info("predict_from_point: %d polygon dihasilkan", len(result))
-        return result
 
     # ------------------------------------------------------------------
-    # predict_from_box — GrabCut inside user-drawn box
+    # predict_from_box
     # ------------------------------------------------------------------
 
     def predict_from_box(
@@ -236,24 +246,46 @@ class AutoLabeler:
         if not self._loaded:
             log.warning("predict_from_box dipanggil sebelum load_model()")
             return []
+
         h, w = image.shape[:2]
         x1, y1, x2, y2 = (
             max(0, int(box[0])), max(0, int(box[1])),
             min(w, int(box[2])), min(h, int(box[3])),
         )
-        bw, bh = x2 - x1, y2 - y1
-        log.debug("GrabCut box (%d,%d) ukuran %dx%d", x1, y1, bw, bh)
-        if bw < 10 or bh < 10:
-            log.warning("Box terlalu kecil (%dx%d), skip", bw, bh)
+        log.info("predict_from_box: box (%d,%d,%d,%d) pada gambar %dx%d", x1, y1, x2, y2, w, h)
+
+        try:
+            self._predictor.set_image(image)
+            masks, scores, _ = self._predictor.predict(
+                box=np.array([x1, y1, x2, y2], dtype=float),
+                multimask_output=False,
+            )
+            if not len(masks):
+                log.info("predict_from_box: tidak ada mask dihasilkan")
+                return []
+            epsilon = getattr(getattr(self._config, "sam", None), "polygon_simplify_epsilon", 2.0)
+            pts = mask_to_polygon(masks[0], epsilon)
+            if not pts:
+                log.info("predict_from_box: mask tidak bisa dikonversi ke polygon")
+                return []
+            class_id, class_name = _class_info(self._config)
+            confidence = float(scores[0])
+            log.info("predict_from_box: 1 polygon, confidence=%.3f", confidence)
+            return [Polygon(
+                instance_id=instance_id_start,
+                class_id=class_id,
+                class_name=class_name,
+                points=pts,
+                color=_polygon_color(instance_id_start),
+                source="sam_point",
+                confidence=confidence,
+            )]
+        except Exception as exc:
+            log.error("predict_from_box: error — %s", exc, exc_info=True)
             return []
-        result = self._grabcut_to_polygons(
-            image, x1, y1, bw, bh, instance_id_start, source="sam_point"
-        )
-        log.info("predict_from_box: %d polygon dihasilkan", len(result))
-        return result
 
     # ------------------------------------------------------------------
-    # predict_automatic — HSV color detection + contour extraction
+    # predict_automatic
     # ------------------------------------------------------------------
 
     def predict_automatic(
@@ -269,80 +301,70 @@ class AutoLabeler:
         h, w = image.shape[:2]
         log.info("predict_automatic: mulai pada gambar %dx%d", w, h)
 
-        min_area = getattr(
-            getattr(self._config, "sam", None), "min_polygon_area_px", 500
-        )
-        epsilon = getattr(
-            getattr(self._config, "sam", None), "polygon_simplify_epsilon", 2.0
-        )
+        sam_cfg = getattr(self._config, "sam", None)
+        min_area = getattr(sam_cfg, "min_polygon_area_px", 500)
+        epsilon = getattr(sam_cfg, "polygon_simplify_epsilon", 2.0)
 
-        log.info("[1/4] Membuat HSV mask (gambar %dx%d → kerja maks %dpx)...", w, h, _WORK_SIZE)
-        mask, scale = _get_plant_mask(image)
-        # min_area is in original-image pixels; convert to work-scale pixels
-        min_area_scaled = min_area * (scale ** 2)
-        green_px = int(mask.sum() / 255)
-        work_px = mask.shape[0] * mask.shape[1]
-        log.info(
-            "[2/4] HSV mask selesai: %d piksel hijau (%.1f%% gambar, skala=%.2f)",
-            green_px, 100 * green_px / work_px, scale,
-        )
+        try:
+            log.info("[1/3] MobileSAM generate masks (ini bisa makan beberapa detik)...")
+            mask_dicts = self._generator.generate(image)
+            mask_dicts.sort(key=lambda m: m["area"], reverse=True)
+            total = len(mask_dicts)
+            log.info("[2/3] %d mask ditemukan, filter area >= %d px²", total, min_area)
 
-        log.info("[3/4] Mencari kontur dari mask...")
-        contours, _ = cv2.findContours(
-            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-        log.info(
-            "      %d kontur ditemukan, filter area >= %.0f px² (skala kerja)",
-            len(contours), min_area_scaled,
-        )
+            class_id, class_name = _class_info(self._config)
+            polygons: list[Polygon] = []
+            iid = instance_id_start
+            skipped = 0
 
-        class_id, class_name = _class_info(self._config)
-        polygons: list[Polygon] = []
-        iid = instance_id_start
-        total = len(contours)
-        skipped = 0
+            for idx, m in enumerate(mask_dicts):
+                if m["area"] < min_area:
+                    skipped += 1
+                    if progress_callback:
+                        progress_callback(idx + 1, total)
+                    continue
 
-        log.info("      Memproses %d kontur secara paralel (%d worker)...", total, _CPU_WORKERS)
-        args_list = [(c, epsilon, scale, min_area_scaled) for c in contours]
+                pts = mask_to_polygon(m["segmentation"], epsilon)
+                if not pts:
+                    skipped += 1
+                    if progress_callback:
+                        progress_callback(idx + 1, total)
+                    continue
 
-        # Process all contours in parallel; results are in the same order as contours
-        with ThreadPoolExecutor(max_workers=_CPU_WORKERS) as ex:
-            results = list(ex.map(_process_contour, args_list))
+                confidence = float(m.get("predicted_iou", 0.9))
+                log.info(
+                    "      + polygon #%d: area=%d px², %d titik, iou=%.3f",
+                    iid - instance_id_start + 1, m["area"], len(pts), confidence,
+                )
+                polygons.append(Polygon(
+                    instance_id=iid,
+                    class_id=class_id,
+                    class_name=class_name,
+                    points=pts,
+                    color=_polygon_color(iid),
+                    source="sam_auto",
+                    confidence=confidence,
+                ))
+                iid += 1
 
-        for idx, result in enumerate(results):
-            if progress_callback:
-                progress_callback(idx + 1, total)
-            if result is None:
-                skipped += 1
-                continue
-            pts, orig_area = result
+                if progress_callback:
+                    progress_callback(idx + 1, total)
+
             log.info(
-                "      + polygon #%d: area=%.0f px², %d titik",
-                iid - instance_id_start + 1, orig_area, len(pts),
+                "[3/3] Selesai: %d polygon dihasilkan, %d dilewati",
+                len(polygons), skipped,
             )
-            polygons.append(Polygon(
-                instance_id=iid,
-                class_id=class_id,
-                class_name=class_name,
-                points=pts,
-                color=_polygon_color(iid),
-                source="sam_auto",
-                confidence=0.90,
-            ))
-            iid += 1
 
-        log.info(
-            "[4/4] Kontur selesai: %d polygon, %d dilewati (area terlalu kecil)",
-            len(polygons), skipped,
-        )
+            if polygons:
+                log.info("      Menghitung oklusi untuk %d polygon...", len(polygons))
+                compute_occlusion_levels(polygons, (h, w))
+                log.info("      Oklusi selesai")
 
-        if polygons:
-            log.info("      Menghitung tingkat oklusi untuk %d polygon...", len(polygons))
-            compute_occlusion_levels(polygons, image.shape[:2])
-            log.info("      Oklusi selesai")
+            return polygons
 
-        return polygons
+        except Exception as exc:
+            log.error("predict_automatic: error — %s", exc, exc_info=True)
+            return []
 
     def predict_automatic_batch(
         self,
@@ -362,36 +384,6 @@ class AutoLabeler:
             if progress_callback:
                 progress_callback(entry, polygons)
         return result
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _grabcut_to_polygons(
-        self,
-        image: np.ndarray,
-        x: int, y: int, bw: int, bh: int,
-        instance_id_start: int,
-        source: str,
-    ) -> list[Polygon]:
-        epsilon = getattr(
-            getattr(self._config, "sam", None), "polygon_simplify_epsilon", 2.0
-        )
-        fg_mask = _grabcut(image, (x, y, bw, bh))
-        pts = mask_to_polygon(fg_mask, epsilon)
-        if not pts:
-            return []
-        class_id, class_name = _class_info(self._config)
-        iid = instance_id_start
-        return [Polygon(
-            instance_id=iid,
-            class_id=class_id,
-            class_name=class_name,
-            points=pts,
-            color=_polygon_color(iid),
-            source=source,
-            confidence=0.85,
-        )]
 
 
 # ---------------------------------------------------------------------------
