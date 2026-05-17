@@ -13,7 +13,7 @@ from PIL import Image
 if TYPE_CHECKING:
     from src.config import Config
 
-_SAM_SOURCES = {"sam_auto", "sam_point"}
+_SAM_SOURCES = {"sam_auto", "sam_point", "roboflow"}
 _OCCLUSION_SUBDIRS = ("rendah", "sedang", "tinggi")
 
 

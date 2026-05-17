@@ -46,7 +46,9 @@ class AnnotationCanvas(QWidget):
     annotation_changed = pyqtSignal(list)
     status_message = pyqtSignal(str)
     point_clicked = pyqtSignal(float, float)
+    point_refine_clicked = pyqtSignal(int, float, float, list)  # instance_id, x, y, prompt_points
     box_selected = pyqtSignal(float, float, float, float)  # x1, y1, x2, y2 (image coords)
+    has_unsaved_changes = pyqtSignal(bool)  # emit True when there are unsaved changes
 
     def __init__(self, config: Config, parent=None) -> None:
         super().__init__(parent)
@@ -69,6 +71,10 @@ class AnnotationCanvas(QWidget):
         # SAM_BOX drag state
         self._box_start: tuple[float, float] | None = None
         self._box_end: tuple[float, float] | None = None
+
+        # SAM_POINT refinement state
+        self._active_refinement_id: int | None = None  # ID polygon yang sedang di-refine
+        self._refinement_prompt_points: list[tuple[float, float]] = []  # Titik prompt untuk refinement
 
         # Pan state (middle-click or Ctrl+drag)
         self._panning: bool = False
@@ -121,6 +127,8 @@ class AnnotationCanvas(QWidget):
         self._drag_vertex = None
         self._drag_pre_snapshot = None
         self._undo_stack = []
+        self._active_refinement_id = None
+        self._refinement_prompt_points = []
         self._pixmap = QPixmap(entry.filepath)
         self.reset_zoom()
 
@@ -135,6 +143,9 @@ class AnnotationCanvas(QWidget):
         self._drag_pre_snapshot = None
         self._box_start = None
         self._box_end = None
+        # Clear refinement state when switching modes
+        self._active_refinement_id = None
+        self._refinement_prompt_points = []
         self.update()
 
     def inject_polygons(self, polygons: list[Polygon]) -> None:
@@ -174,7 +185,32 @@ class AnnotationCanvas(QWidget):
         self._push_undo()
         self._polygons = []
         self._pending_polygons = []
+        self._active_refinement_id = None
+        self._refinement_prompt_points = []
         self.annotation_changed.emit(self.get_polygons())
+        self.update()
+
+    def is_refinement_active(self) -> bool:
+        """Check if there's an active polygon being refined."""
+        return self._active_refinement_id is not None
+
+    def get_active_refinement_id(self) -> int | None:
+        """Get the ID of the polygon currently being refined."""
+        return self._active_refinement_id
+
+    def start_refinement(self, instance_id: int, first_point: tuple[float, float]) -> None:
+        """Start refining an existing polygon with the first prompt point."""
+        self._active_refinement_id = instance_id
+        self._refinement_prompt_points = [first_point]
+        self._selected_id = instance_id
+        self.has_unsaved_changes.emit(True)  # Mark as unsaved (refinement started)
+        self.update()
+
+    def finish_refinement(self) -> None:
+        """Finish the current refinement session (called after Done)."""
+        self._active_refinement_id = None
+        self._refinement_prompt_points = []
+        self._selected_id = None
         self.update()
 
     def undo(self) -> None:
@@ -313,11 +349,13 @@ class AnnotationCanvas(QWidget):
         self._draw_polygons(painter)
         self._draw_active_polygon(painter)
         self._draw_sam_box_preview(painter)
+        self._draw_refinement_points(painter)
 
     def _draw_polygons(self, painter: QPainter) -> None:
         for p in self._polygons + self._pending_polygons:
             is_pending = p in self._pending_polygons
             is_selected = (p.instance_id == self._selected_id and not is_pending)
+            is_refining = (p.instance_id == self._active_refinement_id)
             color = self._polygon_color(p.instance_id)
 
             points_canvas = [self._img_to_canvas(x, y) for x, y in p.points]
@@ -331,7 +369,10 @@ class AnnotationCanvas(QWidget):
             painter.setBrush(QBrush(fill_color))
 
             # Border
-            if is_selected:
+            if is_refining:
+                # Active refinement - cyan border
+                painter.setPen(QPen(QColor(0, 255, 255), 3, Qt.SolidLine))
+            elif is_selected:
                 painter.setPen(QPen(Qt.white, 3, Qt.SolidLine))
             elif is_pending:
                 painter.setPen(QPen(QColor(255, 220, 0), 2, Qt.DashLine))
@@ -422,6 +463,33 @@ class AnnotationCanvas(QWidget):
         h = int(abs(y2 - y1))
         painter.drawRect(left, top, w, h)
 
+    def _draw_refinement_points(self, painter: QPainter) -> None:
+        """Draw prompt points for active refinement polygon."""
+        if not self._refinement_prompt_points:
+            return
+
+        for idx, (px, py) in enumerate(self._refinement_prompt_points):
+            cx, cy = self._img_to_canvas(px, py)
+
+            # Draw point marker
+            if idx == 0:
+                # First point - larger, different color
+                color = QColor(0, 255, 0)  # Green
+                radius = 8
+            else:
+                # Subsequent points
+                color = QColor(100, 255, 100)  # Light green
+                radius = 6
+
+            painter.setBrush(QBrush(color))
+            painter.setPen(QPen(Qt.white, 2))
+            painter.drawEllipse(int(cx) - radius, int(cy) - radius, radius * 2, radius * 2)
+
+            # Draw number
+            painter.setPen(QPen(Qt.white))
+            painter.setFont(QFont("Arial", 8, QFont.Bold))
+            painter.drawText(int(cx) + radius + 2, int(cy) + radius // 2, str(idx + 1))
+
     # ------------------------------------------------------------------ #
     # Mouse events                                                         #
     # ------------------------------------------------------------------ #
@@ -442,10 +510,12 @@ class AnnotationCanvas(QWidget):
         if self._mode == CanvasMode.DRAW:
             if event.button() == Qt.LeftButton:
                 self._active_points.append((ix, iy))
+                self.has_unsaved_changes.emit(True)  # Mark as unsaved
                 self.status_message.emit(f"Titik: {len(self._active_points)}")
                 self.update()
             elif event.button() == Qt.RightButton and self._active_points:
                 self._active_points.pop()
+                self.has_unsaved_changes.emit(len(self._active_points) > 0)  # Still unsaved if points remain
                 self.status_message.emit(f"Titik: {len(self._active_points)}")
                 self.update()
 
@@ -475,7 +545,37 @@ class AnnotationCanvas(QWidget):
 
         elif self._mode == CanvasMode.SAM_POINT:
             if event.button() == Qt.LeftButton:
-                self.point_clicked.emit(ix, iy)
+                # Check if clicking inside the active refinement polygon
+                if self._active_refinement_id is not None:
+                    for p in self._polygons:
+                        if p.instance_id == self._active_refinement_id:
+                            if self._point_in_polygon(ix, iy, p.points):
+                                # Refine existing polygon with multi-point prompt
+                                self._refinement_prompt_points.append((ix, iy))
+                                self.point_refine_clicked.emit(
+                                    self._active_refinement_id,
+                                    ix, iy,
+                                    list(self._refinement_prompt_points)
+                                )
+                                self.status_message.emit(f"Refine polygon #{p.instance_id}: {len(self._refinement_prompt_points)} prompt points")
+                                return
+                # Check if clicking inside any existing polygon to start refinement
+                hit = None
+                for p in reversed(self._polygons):
+                    if self._point_in_polygon(ix, iy, p.points):
+                        hit = p.instance_id
+                        break
+                if hit is not None:
+                    # Start refining this polygon
+                    self.start_refinement(hit, (ix, iy))
+                    self.point_refine_clicked.emit(hit, ix, iy, [(ix, iy)])
+                    self.status_message.emit(f"Refine polygon #{hit}: 1 prompt point (tekan Done untuk final)")
+                    self.update()
+                else:
+                    # Create new polygon
+                    self._active_refinement_id = None
+                    self._refinement_prompt_points = []
+                    self.point_clicked.emit(ix, iy)
 
         elif self._mode == CanvasMode.SAM_BOX:
             if event.button() == Qt.LeftButton:
@@ -577,6 +677,7 @@ class AnnotationCanvas(QWidget):
         self._polygons.append(polygon)
         self._trigger_occlusion_recompute()
         self.annotation_changed.emit(self.get_polygons())
+        self.has_unsaved_changes.emit(True)  # Mark as unsaved (polygon created)
 
         level = polygon.occlusion_level
         pct = int((polygon.occlusion_ratio or 0.0) * 100)

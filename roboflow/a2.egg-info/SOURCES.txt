@@ -1,0 +1,11 @@
+README.md
+setup.py
+a2/__init__.py
+a2/annotate.py
+a2/consts.py
+a2/utils.py
+a2.egg-info/PKG-INFO
+a2.egg-info/SOURCES.txt
+a2.egg-info/dependency_links.txt
+a2.egg-info/requires.txt
+a2.egg-info/top_level.txt

@@ -188,6 +188,7 @@ class AutoLabeler:
         image: np.ndarray,
         point: tuple[float, float],
         negative_points: list[tuple[float, float]] | None = None,
+        positive_points: list[tuple[float, float]] | None = None,
         instance_id_start: int = 1,
     ) -> list[Polygon]:
         if not self._loaded:
@@ -195,14 +196,31 @@ class AutoLabeler:
             return []
 
         h, w = image.shape[:2]
-        log.info("predict_from_point: titik (%.0f, %.0f) pada gambar %dx%d", point[0], point[1], w, h)
 
-        coords = [[point[0], point[1]]]
-        labels = [1]
+        # Build coordinate list with labels
+        # positive_points: all points that are part of the object (label=1)
+        # negative_points: points that are NOT part of the object (label=0)
+        coords = []
+        labels = []
+
+        # Add positive points first
+        if positive_points:
+            for pp in positive_points:
+                coords.append([pp[0], pp[1]])
+                labels.append(1)
+            log.info("predict_from_point: %d positive points", len(positive_points))
+        else:
+            # Single main point
+            coords.append([point[0], point[1]])
+            labels.append(1)
+
+        # Add negative points
         if negative_points:
             for np_ in negative_points:
                 coords.append([np_[0], np_[1]])
                 labels.append(0)
+
+        log.info("predict_from_point: titik utama (%.0f, %.0f) pada gambar %dx%d", point[0], point[1], w, h)
 
         try:
             self._predictor.set_image(image)
