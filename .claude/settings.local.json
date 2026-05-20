@@ -24,7 +24,14 @@
       "Bash(dir E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\src *)",
       "Bash(dir \"E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\src\")",
       "Bash(dir E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\tests *)",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "Bash(.venvScriptspython.exe -c ' *)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -c \"import py_compile; py_compile.compile\\('src/main_window.py', doraise=True\\); print\\('OK'\\)\")",
+      "PowerShell(& \"E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\.venv\\\\Scripts\\\\pip.exe\" uninstall tensorflow tensorflow-intel tf_keras keras -y 2>&1)",
+      "PowerShell(& \"E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\.venv\\\\Scripts\\\\python.exe\" -c \"from torch.utils.tensorboard import SummaryWriter; print\\('TensorBoard OK:', SummaryWriter\\)\" 2>&1)",
+      "PowerShell(& \"E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import numpy, pandas, torch, cv2, albumentations, yaml, tqdm, scipy; print\\('numpy', numpy.__version__\\); print\\('pandas', pandas.__version__\\); print\\('torch', torch.__version__\\); print\\('All imports OK'\\)\" 2>&1)",
+      "PowerShell(& \"E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\\\\.venv\\\\Scripts\\\\python.exe\" -c \"from training.train import _get_device; from training.model import ASPPModule, BoundaryAttentionHead; print\\('training modules OK'\\)\" 2>&1)",
+      "PowerShell(cd \"E:\\\\koding\\\\Javascript\\\\labeling-daun-itoh\"; $env:PYTHONIOENCODING=\"utf-8\"; & \".venv\\\\Scripts\\\\python.exe\" -m training.train training/config_local.yaml 2>&1)"
     ]
   }
 }

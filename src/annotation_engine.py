@@ -22,24 +22,18 @@ class CanvasMode(Enum):
     VIEW = "view"
 
 
-def compute_occlusion_levels(polygons: list[Polygon]) -> None:
-    """Delegate to the real implementation in auto_labeler."""
+def _run_occlusion(polygons: list[Polygon], image_shape: tuple[int, int]) -> None:
+    """Compute occlusion for non-manual polygons given the real image dimensions."""
+    non_manual = [p for p in polygons if not p.occlusion_manual]
+    if not non_manual:
+        return
     try:
         from src.auto_labeler import compute_occlusion_levels as _real
-        # Need image_shape — use a large canvas as proxy when not available
-        # Determine bounds from polygon points
-        all_pts = [pt for p in polygons if not p.occlusion_manual for pt in p.points]
-        if not all_pts:
-            return
-        max_x = int(max(pt[0] for pt in all_pts)) + 1
-        max_y = int(max(pt[1] for pt in all_pts)) + 1
-        _real([p for p in polygons if not p.occlusion_manual], (max_y, max_x))
+        _real(non_manual, image_shape)
     except Exception:
-        # Fallback: mark everything RENDAH so canvas never blinks endlessly
-        for p in polygons:
-            if not p.occlusion_manual:
-                p.occlusion_level = OcclusionLevel.RENDAH
-                p.occlusion_ratio = 0.0
+        for p in non_manual:
+            p.occlusion_level = OcclusionLevel.RENDAH
+            p.occlusion_ratio = 0.0
 
 
 class AnnotationCanvas(QWidget):
@@ -131,6 +125,9 @@ class AnnotationCanvas(QWidget):
         self._refinement_prompt_points = []
         self._pixmap = QPixmap(entry.filepath)
         self.reset_zoom()
+        # Compute occlusion for any polygons that were saved without a level
+        if any(p.occlusion_level is None and not p.occlusion_manual for p in self._polygons):
+            self._trigger_occlusion_recompute()
 
     def get_polygons(self) -> list[Polygon]:
         return [p for p in self._polygons if p.occlusion_level is not None]
@@ -213,6 +210,22 @@ class AnnotationCanvas(QWidget):
         self._selected_id = None
         self.update()
 
+    def set_selected_occlusion(self, level: OcclusionLevel | None) -> None:
+        """Override occlusion for selected polygon. None resets to auto-recompute."""
+        if self._selected_id is None:
+            return
+        for p in self._polygons + self._pending_polygons:
+            if p.instance_id == self._selected_id:
+                if level is None:
+                    p.occlusion_manual = False
+                    self._trigger_occlusion_recompute()
+                else:
+                    p.occlusion_level = level
+                    p.occlusion_manual = True
+                break
+        self.annotation_changed.emit(self.get_polygons())
+        self.update()
+
     def undo(self) -> None:
         if not self._undo_stack:
             return
@@ -281,7 +294,18 @@ class AnnotationCanvas(QWidget):
     # ------------------------------------------------------------------ #
 
     def _trigger_occlusion_recompute(self) -> None:
-        compute_occlusion_levels(self._polygons + self._pending_polygons)
+        # Use real image dimensions (accurate overlap computation)
+        if self._pixmap and not self._pixmap.isNull():
+            shape = (self._pixmap.height(), self._pixmap.width())
+        elif self._entry:
+            shape = (self._entry.height, self._entry.width)
+        else:
+            all_pts = [pt for p in self._polygons + self._pending_polygons for pt in p.points]
+            shape = (
+                int(max(pt[1] for pt in all_pts)) + 1 if all_pts else 1000,
+                int(max(pt[0] for pt in all_pts)) + 1 if all_pts else 1000,
+            )
+        _run_occlusion(self._polygons + self._pending_polygons, shape)
         self.update()
 
     # ------------------------------------------------------------------ #
@@ -711,17 +735,22 @@ class AnnotationCanvas(QWidget):
                     Qt.Key_3: OcclusionLevel.TINGGI,
                 }
                 if key in _level_map:
-                    for p in self._polygons:
+                    new_level = _level_map[key]
+                    for p in self._polygons + self._pending_polygons:
                         if p.instance_id == self._selected_id:
-                            p.occlusion_level = _level_map[key]
+                            p.occlusion_level = new_level
                             p.occlusion_manual = True
                     self.update()
+                    self.annotation_changed.emit(self.get_polygons())
+                    self._show_toast(f"Oklusi → {new_level.value.capitalize()} 🔒 (manual)")
                     return
                 if key == Qt.Key_0:
-                    for p in self._polygons:
+                    for p in self._polygons + self._pending_polygons:
                         if p.instance_id == self._selected_id:
                             p.occlusion_manual = False
                     self._trigger_occlusion_recompute()
+                    self.annotation_changed.emit(self.get_polygons())
+                    self._show_toast("Reset oklusi → otomatis")
                     return
 
         if key in (Qt.Key_Plus, Qt.Key_Equal):

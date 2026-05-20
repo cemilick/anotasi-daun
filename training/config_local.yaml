@@ -1,0 +1,59 @@
+# Config untuk testing lokal — CPU / AMD Radeon iGPU (DirectML)
+# Lebih ringan dari config_train.yaml: ResNet-50, image kecil, epoch sedikit
+# Gunakan: python -m training.train training/config_local.yaml
+
+# Data
+train_json:   output/coco/train.json
+val_json:     output/coco/val.json
+test_json:    output/coco/test.json
+images_dir:   "C:/Users/user/Downloads/daun itoh"
+num_classes:  2
+
+# Device — dihapus = auto-detect (CUDA → DirectML → CPU)
+# device: cpu       # force CPU
+# device: directml  # force AMD/Intel GPU via DirectX 12
+
+# Model — gunakan ResNet-50 agar lebih cepat di CPU
+backbone:     resnet50
+pretrained_backbone: true
+aspp_rates:   [6, 12, 18, 24]
+aspp_out_channels: 256
+trainable_backbone_layers: 1   # freeze lebih banyak layer → lebih cepat
+use_boundary_head: true
+
+# Training — ringan untuk testing
+epochs:       3                # cukup untuk verifikasi kode berjalan
+batch_size:   1                # wajib 1 untuk CPU/iGPU
+num_workers:  0                # wajib 0 di Windows CPU/DirectML
+image_size:   256              # 256 jauh lebih cepat dari 512
+
+# Augmentasi — nonaktifkan mosaic (berat di CPU)
+mosaic_prob:  0.0
+
+# Normalisasi
+normalize_mean: [0.485, 0.456, 0.406]
+normalize_std:  [0.229, 0.224, 0.225]
+
+# Optimizer
+optimizer:    adam
+lr:           0.0001
+weight_decay: 0.0001
+
+# LR Schedule
+lr_scheduler: cosine
+lr_min:       0.000001
+
+# Combined Loss
+loss_weights:
+  focal:    1.0
+  dice:     1.0
+  boundary: 1.0
+
+# Checkpoint
+checkpoint_dir: checkpoints/local/
+save_every:   1                # simpan tiap epoch (karena hanya 3 epoch)
+resume:       null
+
+# Logging
+tensorboard_dir: runs/local/
+log_every:    5                # log lebih sering (batch kecil)

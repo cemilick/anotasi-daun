@@ -1,0 +1,407 @@
+PROPOSAL PENELITIAN S2
+PROPOSAL TESIS
+PROP-DEOCCNET: PENGEMBANGAN ARSITEKTUR DEEP LEARNING UNTUK SEGMENTASI DAUN YANG TUMPANG TINDIH SEBAGIAN 
+Oleh:
+DHEA ANGGITA
+24/551349/PPA/06970
+PROGRAM MAGISTER ILMU KOMPUTER
+DEPARTEMEN ILMU KOMPUTER DAN ELEKTRONIKA
+FAKULTAS MATEMATIKA DAN ILMU PENGETAHUAN ALAM
+UNIVERSITAS GADJAH MADA
+2026
+HALAMAN PERSETUJUAN PROPOSAL TESIS
+Judul Tesis	: Prop-DeOccNet: Pengembangan Arsitektur Deep Learning untuk Segmentasi Daun yang Tumpang Tindih Sebagian 
+Diusulkan oleh 
+
+Nama Mahasiswa	: Dhea Anggita
+NIM	: 24/551349/PPA/06970
+Telah disetujui
+pada tanggal 17 Maret 2026
+Pembimbing
+Wahyono, S.Kom., Ph.D.
+Pembimbing I
+DAFTAR ISI
+DAFTAR GAMBAR
+DAFTAR TABEL
+INTISARI
+PROP-DEOCCNET: PENGEMBANGAN ARSITEKTUR DEEP LEARNING UNTUK SEGMENTASI DAUN YANG TUMPANG TINDIH SEBAGIAN
+Oleh
+Dhea Anggita
+24/551349/PPA/06970
+Analisis fenotipe tanaman yang presisi, menghadapi tantangan teknis berupa oklusi parah pada kondisi kanopi rapat. Penelitian ini mengusulkan Prop-DeOccNet, sebuah arsitektur deep learning yang mengintegrasikan backbone ResNet-101 dengan modul Atrous Spatial Pyramid Pooling (ASPP) untuk mengatasi ambiguitas batas dan hilangnya informasi visual akibat daun yang saling bertumpuk. Modul ASPP memanfaatkan konvolusi dilatasi untuk memperluas receptive field tanpa mengurangi resolusi spasial, sehingga mampu menangkap konteks multi-skala dari detail tekstur hingga struktur daun secara utuh. Selain itu, mekanisme Boundary Attention Head diterapkan untuk memperkuat fitur tepi objek guna memisahkan instansi daun yang berhimpitan secara eksplisit. Model dilatih menggunakan dataset primer daun kelengkeng Itoh yang diklasifikasikan berdasarkan tingkat oklusi. Evaluasi performa menitikberatkan pada metrik Boundary F1 Score (BF Score) untuk memvalidasi akurasi spasial pada batas segmentasi, di samping metrik Intersection over Union (IoU) dan mean Average Precision (mAP). Hasil penelitian ini diharapkan memberikan kontribusi dalam otomatisasi pemantauan fenotipe tanaman pada lingkungan lapangan yang kompleks dan tidak terkontrol.
+Kata Kunci: Instance Segmentation, Oklusi, Daun Kelengkeng Itoh, ASPP, Boundary F1 Score
+ABSTRACT
+PROP-DEOCCNET: DEVELOPMENT OF A DEEP LEARNING ARCHITECTURE FOR LEAF SEGMENTATION UNDER PARTIAL OCCLUSION
+by
+Dhea Anggita
+24/551349/PPA/06970
+Precise plant phenotype analysis, faces significant technical challenges due to severe occlusion in dense canopy conditions. This research proposes Prop-DeOccNet, a deep learning architecture that integrates a ResNet-101 backbone with the Atrous Spatial Pyramid Pooling (ASPP) module to address boundary ambiguity and visual information loss caused by overlapping leaves. The ASPP module utilizes dilated convolutions to expand the receptive field without sacrificing spatial resolution, enabling the capture of multi-scale context ranging from fine texture details to complete leaf structures. Furthermore, a Boundary Attention Head mechanism is implemented to enhance object edge features, explicitly separating adjacent leaf instances. The model is trained using a primary dataset of Itoh longan leaves, classified by occlusion severity levels. Performance evaluation focuses on the Boundary F1 Score (BF Score) metric to validate spatial accuracy at segmentation boundaries, alongside Intersection over Union (IoU) and mean Average Precision (mAP) metrics. The results of this study are expected to contribute to the automation of plant phenotype monitoring in complex and uncontrolled field environments.
+Keyword: Instance Segmentation, Occlusion, Itoh Longan Leaf, ASPP, Boundary F1 Score
+BAB I 
+PENDAHULUAN
+Latar Belakang Masalah
+Pertanian Presisi (Precision Agriculture) saat ini menjadi paradigma utama dalam melakukan optimalisasi hasil pertanian melalui pengelolaan sumber daya yang terukur secara real-time. Di era tantangan perubahan iklim dan degradasi lahan, transformasi digital dalam pemantauan tanaman menjadi hal yang penting bagi ketahanan pangan global. Salah satu fondasi utamanya adalah analisis fenotipe, yaitu karakteristik fisik dan fisiologis tanaman yang dihasilkan dari interaksi kompleks antara genotipe dan lingkungan (Scharr dkk., 2016). Pengukuran fenotipe yang presisi, merupakan parameter dasar dalam mengevaluasi kesehatan tanaman, efisiensi fotosintesis, dan respon terhadap stres biotik maupun abiotik (Barth dkk., 2018).
+Secara konvensional, pengambilan data fenotipe dilakukan secara manual memiliki banyak kelemahan seperti risiko kerusakan pada objek(destruktif), penilaian yang bersifat subjektif, serta keterbatasan dalam menangani jumlah data yang besar. Kemajuan teknologi Computer Vision dan Deep Learning telah membuka peluang untuk ekstraksi data secara otomatis dan non-destruktif. Namun, implementasi di lapangan menghadapi hambatan teknis yang signifikan. Dalam kondisi kanopi yang rapat, daun-daun tidak muncul sebagai objek terisolasi melainkan sebagai klaster vegetasi yang saling tumpang tindih (overlapping). Pada titik ini, segmentasi semantik konvensional yang hanya mengklasifikasikan piksel berdasarkan kategori daun atau latar belakang menjadi tidak memadai. Diperlukan pendekatan Instance Segmentation yang mampu memberikan identitas unik pada setiap individu daun guna memungkinkan penghitungan dan pengukuran dimensi yang akurat (Kuznichov dkk., 2019).
+Tantangan utama dalam Instance Segmentation tanaman adalah fenomena oklusi parah. Ketika sebuah daun menutupi daun lainnya, terjadi diskontinuitas informasi spasial dan hilangnya fitur morfologis pada bagian yang tertutup. Kondisi ini sering kali diperburuk oleh faktor lingkungan seperti pencahayaan yang tidak seragam, yang menciptakan bayangan tajam pada tepi daun. Bayangan tersebut menurunkan kontras visual secara artifisial, sehingga mengaburkan batas (boundary) antar individu daun (Chen dkk., 2020). Model Deep Learning standar sering kali mengalami kegagalan pada skenario ini karena keterbatasan receptive field efektif, model cenderung hanya melihat informasi lokal tanpa mampu merekonsiliasi struktur global tanaman untuk merekonstruksi bagian daun yang hilang akibat oklusi (Wang dkk., 2024).
+Selain itu, Mask R-CNN sering kali menunjukkan performa yang tidak optimal ketika memisahkan individu daun secara presisi karena keterbatasan receptive field dan hilangnya detail tepi akibat oklusi serta pencahayaan tidak seragam (Yang dkk, 2020). Kesalahan segmentasi pada daun yang berhimpitan dapat berakibat fatal pada perhitungan biomassa atau analisis kesehatan tanaman karena menyebabkan overestimasi atau under estimasi jumlah/luas daun (P. Blok, 2021). Mask R-CNN standar kekurangan mekanisme untuk mengekstraksi informasi konteks global secara luas, sehingga sering kali terjadi fenomena under-segmentation (dua daun dianggap satu) atau mask leakage (masker satu daun meluber ke daun di bawahnya).
+Kesalahan segmentasi pada daun yang berhimpitan ini berakibat fatal pada analisis fenotipe. Ketidakakuratan dalam memisahkan individu daun akan menyebabkan galat kumulatif pada perhitungan Leaf Area Index (LAI) dan estimasi biomassa. Hal ini mengakibatkan kesalahan interpretasi terhadap laju pertumbuhan tanaman, efisiensi fotosintesis, hingga ketidaktepatan dosis pemberian nutrisi atau intervensi kesehatan. Tanpa pemisahan instance yang presisi, data yang dihasilkan tidak dapat merepresentasikan kondisi biologis tanaman yang sebenarnya, yang pada akhirnya merusak validitas sistem pertanian presisi.
+Kesenjangan penelitian saat ini terletak pada ketidakmampuan arsitektur encoder-decoder umum, seperti U-Net standar, dalam menangani objek multi-skala dalam kondisi oklusi. Arsitektur klasik umumnya mengandalkan operasi downsampling (seperti max-pooling) untuk memperluas receptive field, namun proses ini secara inheren mengorbankan resolusi fitur dan detail tepi yang krusial (Chen dkk., 2018). Akibatnya, daun yang berukuran kecil atau bagian tepi daun yang tipis seringkali terabaikan atau bergabung dengan objek di sekitarnya.
+Untuk mengatasi dilema antara resolusi dan konteks ini, penggunaan modul Atrous Spatial Pyramid Pooling (ASPP) menawarkan solusi teknis yang elegan. ASPP memanfaatkan konvolusi dilatasi (atrous convolution) yang memungkinkan perluasan receptive field secara eksponensial tanpa meningkatkan jumlah parameter atau mengurangi resolusi spasial citra. Dengan menerapkan berbagai laju dilatasi (dilation rates) secara paralel, model dapat menangkap informasi konteks multi skala mulai dari detail tekstur tepi daun hingga struktur daun secara utuh (Zhu dkk., 2021). Informasi kontekstual yang kaya ini sangat penting bagi model untuk mempertahankan ketajaman segmentasi pada area yang teroklusi parah, karena model dapat belajar bahwa bagian yang hilang adalah kelanjutan dari struktur daun yang sama berdasarkan pola pertumbuhan global.
+Penelitian ini bertujuan untuk merancang model Deep Learning yang robust melalui modifikasi arsitektur encoder-decoder yang mengintegrasikan backbone ResNet-101 dengan modul ASPP. Penggunaan ResNet-101 sebagai backbone didasarkan pada kemampuannya mengekstraksi fitur hierarkis yang dalam tanpa mengalami masalah vanishing gradient. Kombinasi ini diharapkan mampu menghasilkan representasi fitur yang kaya terhadap variasi skala dan pose daun. Evaluasi performa model akan difokuskan pada ketajaman kontur menggunakan metrik Boundary F1 (BF Score), yang terbukti lebih sensitif terhadap akurasi tepi dibandingkan metrik berbasis area seperti Intersection over Union (IoU) (Chen dkk., 2018). Dengan demikian, penelitian ini diharapkan dapat memberikan kontribusi signifikan dalam otomatisasi analisis fenotipe tanaman pada kondisi lingkungan yang kompleks dan tidak terkontrol.
+Rumusan Masalah
+Penelitian ini berfokus pada pengembangan arsitektur Deep Learning yang dirancang khusus untuk melakukan Instance Segmentation daun pada tanaman kelengkeng Itoh dalam kondisi kanopi yang rapat. Fokus utama diarahkan pada penyelesaian masalah ambiguitas batas dan hilangnya informasi visual akibat fenomena oklusi parah antar daun kelengkeng. Untuk mencapai hal tersebut, penelitian ini mengusulkan modifikasi arsitektur melalui integrasi modul Atrous Spatial Pyramid Pooling (ASPP) guna memperkuat ekstraksi fitur multi-skala. Keberhasilan solusi ini divalidasi berdasarkan kemampuan model dalam menghasilkan segmentasi batas yang presisi pada area tumpang tindih, dengan mengacu pada prinsip akurasi tepi yang diukur melalui parameter Boundary F1 Score.
+Batasan Masalah
+Untuk menjaga fokus dan lingkup penelitian tetap terkelola, batasan masalah yang ditetapkan adalah:
+Objek Penelitian spesifik pada citra daun tanaman kelengkeng jenis Itoh (Dimocarpus longan) dalam kondisi vegetasi rimbun.
+Fokus utama adalah Instance Segmentation (membedakan setiap daun individu yang bertumpuk) dan bukan sekadar Semantic Segmentation.
+Model yang digunakan adalah arsitektur Deep Learning modern dengan modifikasi arsitektur Mask R-CNN. Modifikasi ini dilakukan dengan:
+Integrasi modul ASPP untuk menangkap konteks multi-skala pada daun yang teroklusi.
+Penambahan Boundary Attention Head sebagai mekanisme untuk memisahkan instance yang bertumpukan dengan memfokuskan bobot pembelajaran pada tepi objek.
+Adaptasi fungsi kerugian (Loss Function) yang mengombinasikan Boundary Loss untuk meningkatkan presisi pada piksel-piksel batas. Adaptasi fungsi kerugian (Loss Function) yang mengombinasikan Boundary Loss untuk meningkatkan presisi pada piksel-piksel batas.
+Model secara khusus ditargetkan untuk mengatasi kondisi oklusi antar daun. 
+Peningkatan robustness diimplementasikan melalui adaptasi arsitektur yang fokus pada fitur spasial multiskala (Atrous Spatial Pyramid Pooling - ASPP) atau mekanisme de-overlapping.
+Menggunakan dataset fenotipe tanaman yang memiliki tingkat kerapatan kanopi tinggi dengan anotasi instance yang akurat.
+Penelitian ini akan melakukan studi ablasi (ablation study) untuk memvalidasi kontribusi individual dari modul ASPP dan Boundary Attention Head. Pengujian dilakukan dengan membandingkan performa model lengkap terhadap dua varian yang masing-masing menghilangkan satu komponen utama tersebut.
+Tujuan Penelitian
+Penelitian ini secara komprehensif bertujuan untuk merancang serta mengimplementasikan sebuah model Deep Learning khusus untuk segmentasi instance daun kelengkeng Itoh. Fokus utama dari pengembangan ini adalah integrasi modul ASPP ke dalam arsitektur berbasis ResNet-101 guna mengatasi ambiguitas batas akibat oklusi antar daun, sehingga memastikan setiap individu daun dapat dipisahkan dengan tingkat akurasi yang tinggi. Selain aspek perancangan, penelitian ini diarahkan pada optimasi parameter model guna mencapai tingkat robustness yang superior saat berhadapan dengan kondisi kanopi tanaman yang sangat padat. Untuk membuktikan efektivitasnya, performa model akan dievaluasi secara kuantitatif menggunakan metrik Intersection over Union (IoU) dan secara mendalam menitikberatkan pada penggunaan Boundary F1 Score (BF Score) sebagai instrumen validasi krusial untuk mengukur akurasi spasial pada batas segmentasi. 
+Selain itu, untuk Membuktikan kontribusi empiris setiap komponen arsitektur Prop-DeOccNet (modul ASPP dan Boundary Attention Head), dilakukan studi ablasi terstruktur, sehingga keputusan desain arsitektur dapat divalidasi secara kuantitatif.
+Manfaat Penelitian
+Penelitian ini diharapkan memberikan manfaat sebagai berikut:
+Model yang dikembangkan dapat digunakan pada sistem pemantauan otomatis untuk mengidentifikasi individu daun secara akurat meskipun tanaman tumbuh sangat rimbun.
+Memungkinkan pemantauan real-time terhadap kepadatan kanopi, yang merupakan indikator penting pertumbuhan biomassa tanaman kelengkeng Itoh.
+Mengurangi ketergantungan pada pengamatan manual yang sulit dilakukan pada tanaman dengan tingkat tumpang tindih yang tinggi.
+Menjadi dasar bagi sistem fenotipe lanjut yang memerlukan identifikasi individu daun yang presisi sebelum analisis lebih lanjut (seperti deteksi penyakit per lembar daun).
+Kontribusi Penelitian
+Penelitian ini memberikan kontribusi substantif dalam domain Computer Vision dan Precision Agriculture melalui tiga pilar utama:
+Pengembangan model segmentasi de-occlusion berbasis Resnet-ASPP: Merancang modifikasi arsitektur Deep Learning yang mengintegrasikan backbone ResNet-101 dengan modul Atrous Spatial Pyramid Pooling (ASPP). Integrasi ini memberikan mekanisme spesifik untuk mengatasi oklusi daun melalui perluasan receptive field tanpa kehilangan resolusi spasial, sehingga memungkinkan pemisahan instance individu yang akurat meskipun batas antar objek kabur atau tidak terlihat jelas.
+Pembuktian empiris robustness terhadap kepadatan objek: Meningkatkan ketahanan model (dinyatakan melalui BF Score tinggi) pada kondisi kanopi tanaman kelengkeng Itoh yang sangat padat dan kompleks. Penelitian ini membuktikan bahwa penggunaan konvolusi dilatasi dalam modul ASPP efektif dalam merekonstruksi fitur daun yang terpotong akibat tumpang tindih, mereplikasi skenario pertumbuhan puncak di lapangan.
+Standarisasi evaluasi berbasis batas pada fenotipe tanaman: Mendorong penggunaan metrik Boundary F1 Score (BF Score) sebagai standar evaluasi kinerja segmentasi daun dalam konteks fenotipe lapangan. Metrik ini secara langsung memvalidasi keakuratan batas objek yang sering kali diabaikan oleh metrik berbasis area tradisional seperti IoU, sehingga menjembatani akurasi model Deep Learning dengan validitas pengukuran biologis kuantitatif yang presisi.
+BAB II 
+TINJAUAN PUSTAKA
+Penelitian oleh Yang dkk. (2023) mengusulkan sistem dua tahap yang menggabungkan YOLOv8 untuk deteksi objek dengan DeepLabv3+ yang telah ditingkatkan untuk segmentasi presisi. Modul ASPP pada model tersebut dimodifikasi menjadi DenseASPP guna menangkap detail daun sempit dan tangkai tipis secara lebih efektif, sehingga mencapai mIoU sebesar 90,8%. Hal ini memperkuat urgensi penggunaan mekanisme atrous multi-skala dalam mempertahankan detail tepi pada objek vegetasi yang memiliki morfologi kompleks.
+Ma dkk. (2023) mengembangkan mekanisme local refinement berbasis filter Gaussian dan high-boost untuk meningkatkan kualitas segmentasi instance pada daun tomat dengan latar belakang yang kompleks. Metode ini secara khusus dirancang untuk memisahkan daun individu dalam kondisi oklusi di rumah kaca, yang memungkinkan ekstraksi jumlah dan ukuran daun secara otomatis. Studi ini menggarisbawahi pentingnya strategi peningkatan ketajaman tepi (edge enhancement) untuk mengatasi ambiguitas batas pada lingkungan nyata.
+Penelitian oleh Ward dkk. (2018) memanfaatkan kerangka Mask R-CNN yang dilatih menggunakan kombinasi data citra nyata dan sintetik untuk segmentasi instance daun. Pendekatan ini berhasil mencapai skor segmentasi sebesar 90% pada benchmark CVPPP LSC, membuktikan bahwa Mask R-CNN merupakan arsitektur yang sangat kuat dalam menangani objek yang saling tumpang tindih secara masif. Keberhasilan penggunaan data sintetik dalam studi ini juga menunjukkan potensi generalisasi model terhadap berbagai variasi spesies tanaman.
+Li dkk. (2022) memperkenalkan PSegNet, sebuah jaringan Deep Learning yang mampu melakukan segmentasi semantik dan instance secara simultan pada data point cloud tanaman. Dengan mengintegrasikan modul ekstraksi fitur ganda dan mekanisme atensi, model ini efektif memisahkan daun yang berdekatan dan mengalami overlap pada struktur kanopi yang rumit. Hal ini menunjukkan bahwa integrasi fitur lokal dan global sangat krusial dalam mengidentifikasi identitas unik setiap organ tanaman.
+Studi oleh Li dkk. (2019) berfokus pada metode overlapping-free leaf segmentation melalui teknik filter 3D dan facet region growing. Metode ini mampu mengestimasi luas, panjang, dan lebar setiap daun secara otomatis dengan nilai F-measure mencapai 99,66%. Temuan ini menegaskan bahwa penyelesaian masalah tumpang tindih (de-overlapping) adalah langkah kunci dalam ekstraksi parameter fenotipe yang akurat pada tingkat organ tanaman.
+Luo dkk. (2023) mengembangkan framework Eff-3DPSeg yang bersifat weakly supervised untuk segmentasi organ dan instance daun. Penelitian ini berhasil mencapai Average Precision (AP) sebesar 70,3% pada dataset Pheno4D, yang membuktikan bahwa segmentasi instance daun merupakan prasyarat mutlak untuk mendapatkan data fenotipe yang valid secara biologis. Penggunaan metode yang efisien dalam anotasi ini memberikan referensi bagi pengembangan model pada dataset yang memiliki kompleksitas tinggi.
+Dalam penelitian ISC-MRCNN, Yang dkk. (2020) memodifikasi arsitektur Mask R-CNN dengan mengintegrasikan Feature Pyramid Network (FPN), Soft-NMS, dan filter mask khusus. Modifikasi ini bertujuan untuk memitigasi dampak noise, oklusi, dan variasi pencahayaan yang sering terjadi pada citra daun di lapangan. Hasilnya menunjukkan peningkatan presisi dibandingkan model standar, yang memperkuat alasan perlunya optimasi arsitektur pada kasus daun yang saling menumpuk.
+Chen dkk. (2016) meletakkan dasar teoritis melalui pengenalan atrous convolution dan modul Atrous Spatial Pyramid Pooling (ASPP) pada arsitektur DeepLab. Teknologi ini memungkinkan perluasan receptive field tanpa menurunkan resolusi spasial citra, sehingga model mampu menangkap konteks multi-skala secara efektif. Prinsip ini secara langsung mendasari keputusan penggunaan kombinasi ResNet-101 dan ASPP dalam penelitian Anda untuk mempertahankan detail batas objek di tengah kepadatan kanopi.
+Konvolusi dilatasi (dilated convolution atau atrous convolution) adalah teknik kunci yang diperkenalkan oleh Chen dkk. (2016) sebagai solusi untuk hilangnya resolusi spasial pada jaringan saraf dalam. Pada konvolusi standar, operasi downsampling (max-pooling) memperluas receptive field tetapi mengorbankan resolusi fitur — sebuah trade-off yang merugikan untuk segmentasi presisi. Konvolusi dilatasi mengatasi dilema ini dengan menyisipkan celah (holes) di antara bobot filter, sehingga jangkauan pandang filter membesar secara eksponensial tanpa menambah jumlah parameter maupun menurunkan resolusi feature map.
+Relevansi langsung terhadap penelitian ini adalah modul ASPP yang menerapkan konvolusi dilatasi secara paralel dengan beberapa nilai r berbeda (r = 6, 12, 18, 24). Setiap cabang menangkap konteks pada skala berbeda: r kecil untuk fitur lokal (detail tepi halus) dan r besar untuk konteks global (struktur daun pada kanopi rapat). Keluaran semua cabang digabungkan (concatenated) lalu diproyeksikan ke ruang fitur seragam. Strategi ini krusial karena daun kelengkeng Itoh memiliki variasi ukuran signifikan akibat perbedaan usia daun dan posisi pada kanopi (Chen dkk., 2018; Wang dkk., 2024).
+Yuan dkk. (2022) menerapkan DeepLabv3+ dengan backbone ResNet-101 yang diperkaya dengan modul atensi kanal untuk segmentasi bercak penyakit pada daun anggur. Eksperimen menunjukkan bahwa penggunaan ResNet-101 dan fusi fitur multi-level mampu meningkatkan nilai mIoU dan F1-score hingga 3% pada citra luar ruangan. Hal ini membuktikan stabilitas kombinasi tersebut dalam mengekstraksi fitur halus dari objek vegetasi pada kondisi lingkungan yang tidak terkontrol.
+Charisis dan Argyropoulos (2024) melakukan tinjauan sistematis terhadap 77 studi instance segmentation di bidang pertanian dan menemukan tren penggunaan model dua tahap berbasis Mask R-CNN yang dikustomisasi. Tantangan utama yang diidentifikasi meliputi oklusi berat dan latar belakang yang kompleks, yang sering kali menghambat akurasi model. Review ini memvalidasi bahwa arah penelitian yang Anda ambil telah sesuai dengan tren state-of-the-art dalam upaya menjawab tantangan fenotipe digital saat ini.
+Berdasarkan sintesis dari berbagai literatur di atas, dapat disimpulkan bahwa segmentasi instance pada organ tanaman merupakan fondasi utama dalam ekstraksi parameter fenotipe yang akurat (Luo dkk., 2023; Ward dkk., 2018). Namun, fenomena oklusi parah pada kanopi rapat tetap menjadi kendala teknis yang persisten yang membatasi akurasi sistem otomatis (Charisis & Argyropoulos, 2024; Chawade dkk., 2019). Meskipun model state-of-the-art seperti Mask R-CNN telah menunjukkan performa tinggi pada dataset umum, efektivitasnya sering kali terdegradasi saat dihadapkan pada karakteristik morfologi spesifik seperti daun kelengkeng Itoh yang rimbun dan saling bertumpuk secara masif (Yang dkk., 2020). Terdapat celah penelitian (research gap) dalam hal optimalisasi model yang mampu menyeimbangkan perluasan receptive field untuk menangkap konteks global tanaman tanpa mengorbankan resolusi detail pada batas-batas objek yang ambigu akibat bayangan dan oklusi (Chen dkk., 2016; Ma dkk., 2023).
+Oleh karena itu, penelitian ini bertujuan untuk mengisi celah tersebut dengan mengusulkan integrasi backbone ResNet-101 dan modul Atrous Spatial Pyramid Pooling (ASPP) dalam skema segmentasi instance. Argumen utama yang melandasi pendekatan ini adalah stabilitas ResNet-101 dalam mengekstraksi fitur hierarkis yang dalam (Yuan dkk., 2022), yang kemudian dipadukan dengan modul ASPP untuk menangkap informasi multi-skala melalui mekanisme atrous convolution (Yang dkk., 2023). Kombinasi ini diproyeksikan mampu melakukan rekonstruksi informasi pada bagian daun yang tersembunyi (Li dkk., 2022), sekaligus mempertahankan ketajaman kontur pada area tumpang tindih (Li dkk., 2019). Berbeda dengan mayoritas penelitian terdahulu yang secara dominan menggunakan metrik berbasis area seperti Intersection over Union (IoU), penelitian ini akan menitikberatkan validasi pada metrik Boundary F1 Score (BF Score). Hal ini dilakukan untuk menjamin tingkat akurasi spasial pada tepi objek, yang secara biologis jauh lebih relevan untuk penghitungan luas daun dan analisis biomassa yang presisi pada kondisi lingkungan luar ruangan (in-field) yang tidak terkontrol. Ringkasan dari tinjauan penelitian ini dapat dilihat pada Tabel 2.1.
+Tabel 2.1 Tinjauan Pustaka
+Beberapa penelitian telah mengadopsi arsitektur Mask R-CNN untuk segmentasi instance tanaman dan menunjukkan hasil yang menjanjikan pada kondisi tertentu. Kombinasi Mask R-CNN dengan ResNet-50 dan data sintetik mampu mencapai nilai SBD (Segmentation Best Dice) sebesar 90% pada dataset CVPPP yang terstandarisasi, sekaligus mereduksi kebutuhan anotasi manual hingga 70% (Ward dkk. 2018). Selain itu, pengembangan ISC-MRCNN dengan menambahkan Feature Pyramid Network (FPN) dan Soft-NMS, yang berhasil meningkatkan mAP menjadi 85,4% pada dataset lapangan multi-spesies serta memperbaiki deteksi pada kondisi oklusi ringan hingga sedang (Yang dkk. 2020). Tinjauan sistematis Charisis dan Argyropoulos (2024) terhadap 77 studi mengonfirmasi dominasi pendekatan berbasis Mask R-CNN di bidang pertanian, dengan rata-rata IoU model berkisar antara 75–85%.
+Meskipun demikian, ketiga studi tersebut secara konsisten menunjukkan keterbatasan yang sama, yaitu tidak adanya mekanisme eksplisit untuk mempertegas batas (boundary) antar instansi daun pada kondisi oklusi berat (>60%). Soft-NMS hanya memperbaiki seleksi bounding box, bukan akurasi kontur mask, sementara oklusi diidentifikasi sebagai penyebab kegagalan utama pada lebih dari 15% kasus di kondisi kanopi rapat dan belum terpecahkan oleh satu pun dari 77 studi yang dikaji. Perbandingan sistematis atas kontribusi dan keterbatasan masing-masing penelitian tersebut disajikan pada Tabel 2.2.
+Tabel 2.2 Perbandingan Penelitian Berbasis Mask R-CNN untuk Segmentasi Instance Tanaman
+BAB III 
+METODOLOGI PENELITIAN
+Deskripsi Umum Penelitian
+Penelitian ini merupakan studi eksperimental di domain Computer Vision yang menitikberatkan pada pengembangan model Instance Segmentation guna memitigasi kendala oklusi atau fenomena tumpang tindih pada citra daun kelengkeng varietas Itoh. Fokus utama dari riset ini terletak pada implementasi arsitektur DeOccNet yang memiliki kapabilitas khusus dalam merekonstruksi informasi spasial yang terfragmentasi akibat adanya objek daun yang saling menutupi di dalam struktur kanopi yang padat.
+Pada aspek teknis, model ini memanfaatkan ResNet-101 sebagai backbone untuk melakukan ekstraksi fitur hierarkis secara mendalam dari citra masukan. Pemilihan struktur 101 lapisan pada ResNet-101 krusial untuk menangkap representasi fitur yang kompleks sekaligus mencegah munculnya degradasi akurasi akibat vanishing gradient. Komponen ini kemudian disinergikan dengan modul Atrous Spatial Pyramid Pooling (ASPP) yang berperan penting dalam mengekstraksi konteks multi-skala melalui variasi dilation rates. Integrasi ini memungkinkan sistem untuk mengenali struktur utuh daun secara global meskipun sebagian besar bagian fisiknya tertutup oleh objek lain.
+Meskipun ResNet-101 dipilih sebagai backbone utama, penelitian ini juga akan mengeksplorasi dua alternatif yang lebih ringan sebagai ablation study:
+ResNet-50: ~25 juta parameter (separuh ResNet-101). Jika perbedaan mAP < 2%, maka ResNet-50 lebih efisien untuk implementasi lapangan (He dkk., 2016). 
+MobileNetV3: ~5 juta parameter dengan depthwise separable convolution. Cocok untuk deployment pada smartphone petani atau perangkat edge computing (Howard dkk., 2019).
+Selain ablasi pada backbone, penelitian ini juga melakukan ablasi terhadap komponen fungsional utama: modul ASPP dan Boundary Attention Head. Ablasi ini dirancang untuk memberikan bukti empiris bahwa setiap komponen memberikan kontribusi yang terukur dan signifikan terhadap performa keseluruhan.
+Alur penelitian dimulai dari Akuisisi Data Primer lapangan, dilanjutkan dengan Anotasi Manual pada resolusi asli untuk menjaga akurasi batas daun. Setelah itu, dilakukan Preprocessing dan Augmentasi Data untuk menyesuaikan data dengan spesifikasi model serta meningkatkan variasi dataset. Tahap akhir eksperimen ini adalah melakukan evaluasi performa, model diuji menggunakan metrik mean Average Precision (mAP), Intersection over Union (IoU), dan Boundary F1 Score (BF Score) untuk memvalidasi akurasi ketajaman segmentasi pada daun yang tumpang tindih. Apabila hasil evaluasi belum mencapai standar performa yang sesuai, dilakukan iterasi ke tahap pelatihan model untuk optimasi. Alur sistem secara umum ditunjukkan pada Gambar 3.1.
+Flowchart Tahapan Penelitian
+Akuisisi Data
+Data citra daun dalam penelitian ini dikumpulkan langsung dari perkebunan kelengkeng Itoh melalui pengambilan foto di lapangan. Pengambilan citra berbagai variasi daun yang saling tumpuk atau oklusi menjadi fokus utama agar dataset yang terkumpul benar-benar mewakili keadaan asli di kanopi pohon.
+ Prosedur dan Instrumen Pengambilan Data 
+Proses pengumpulan citra dilakukan menggunakan perangkat smartphone dengan spesifikasi kamera yang memadai untuk menangkap detail tekstur daun secara presisi. Pemilihan smartphone sebagai instrumen akuisisi didasarkan pada tujuan penelitian untuk menciptakan sistem yang fleksibel dan dapat diimplementasikan dengan perangkat yang umum digunakan oleh praktisi pertanian.
+Pengambilan data dilakukan secara eksklusif pada kondisi pencahayaan yang terang (pukul 09.00 – 12.00 WIB) untuk meminimalisir noise pada citra akibat low-light dan memastikan fitur tepi (edge) daun terlihat kontras. Cahaya matahari yang optimal membantu modul ASPP dalam mengekstraksi informasi spasial dan konteks global daun meskipun terdapat bagian yang tertutup. Kamera diposisikan dengan jarak sekitar 30 cm hingga 50 cm dari objek dengan sudut pandang yang bervariasi (multi-angle) untuk menangkap dinamika tumpukan daun dari berbagai sisi.
+Klasifikasi Karakteristik Oklusi 
+Untuk memberikan analisis performa yang komprehensif, dataset primer ini diklasifikasikan ke dalam tiga tingkatan oklusi berdasarkan persentase area daun yang tertutup oleh objek lain (daun atau ranting):
+Oklusi Rendah (Low Occlusion): Objek daun target tertutup < 30%. Pada tahap ini, sebagian besar fitur morfologi dan kontur daun masih terlihat jelas, berfungsi sebagai data latih dasar bagi model.
+Oklusi Sedang (Partial Occlusion): Objek daun tertutup antara 30% – 60%. Kondisi ini mensimulasikan kepadatan kanopi standar di mana batas antar instansi daun mulai sulit dibedakan.
+Oklusi Parah (Severe Occlusion): Objek daun tertutup > 60%. Ini merupakan fokus utama penelitian, di mana model DeOccNet ditantang untuk memprediksi keberadaan daun secara utuh hanya berdasarkan potongan fitur kecil yang terdeteksi di lapangan.
+Volume dan Distribusi Data 
+Penelitian ini menargetkan pengumpulan dataset primer sebanyak 200 citra berkualitas tinggi. Meskipun secara kuantitas terlihat terbatas, setiap citra dipastikan memiliki kerapatan objek yang tinggi dengan estimasi 10–20 instansi daun per frame. Dengan demikian, total objek yang akan dianotasi diperkirakan mencapai ±3.000 instansi daun, jumlah yang representatif untuk melatih model pada tingkat instansi.
+Untuk mengatasi keterbatasan jumlah data primer dan meningkatkan kemampuan generalisasi model, penelitian ini akan menerapkan strategi Data Augmentation (seperti rotasi, flipping, dan scaling) serta Transfer Learning menggunakan bobot pra-latih (pre-trained weights). Selanjutnya, seluruh dataset akan didistribusikan secara acak ke dalam tiga bagian, yaitu: training set (70%) untuk pembaruan bobot model, validation set (10%) untuk optimasi hyperparameter, dan testing set (20%) untuk evaluasi performa akhir.
+Seluruh 200 citra didistribusikan secara stratified random sampling ke dalam tiga subset berdasarkan tingkat oklusi:
+Training Set (70% = 140 citra): Digunakan untuk pembaruan bobot model. Augmentasi hanya diterapkan pada subset ini.
+Validation Set (10% = 20 citra): Digunakan untuk memantau performa selama pelatihan (monitoring loss, mAP, dan BF Score per epoch) serta tuning hyperparameter. Tidak digunakan untuk pembaruan bobot.
+Test Set (20% = 40 citra): Disimpan sepenuhnya terpisah (holdout) dan hanya digunakan sekali pada evaluasi akhir untuk mengukur generalisasi model yang sesungguhnya (Ward dkk., 2018; Kuznichov dkk., 2019).
+Rancangan Algoritma
+Rancangan algoritma pada sistem Prop-DeOccNet terdiri dari rangkaian proses yang sistematis, mulai dari pra-pemrosesan hingga prediksi akhir. Alur kerja sistem secara keseluruhan dimulai dengan normalisasi citra input untuk menstabilkan distribusi nilai piksel dan memperkaya data. Selanjutnya, citra diproses melalui backbone ResNet-101 yang diikuti oleh modul ASPP untuk ekstraksi fitur multiskala yang kaya serta penguatan batas objek melalui Boundary Attention Head.
+flowchart  perancangan algoritma Prop-DeOccNet.
+Penjelasan rinci mengenai setiap tahapan dalam diagram alir di atas diuraikan pada sub-bab berikut.
+Anotasi Data (Ground Truth)
+Pada tahap ini, dilakukan pelabelan manual terhadap citra kanopi kelengkeng Itoh untuk menghasilkan data ground truth. Dua alat anotasi profesional digunakan secara komplementer: (1) LabelMe (MIT CSAIL) yang berbasis web, memungkinkan pembuatan polygon instance secara kolaboratif dan ekspor langsung ke format JSON/COCO; serta (2) CVAT (Computer Vision Annotation Tool, OpenCV) yang menyediakan antarmuka berbasis browser dengan fitur interpolasi semi-otomatis dan manajemen proyek tim anotator. Kedua alat ini mendukung format poligon sehingga setiap individu daun dapat dianotasi mengikuti konturnya secara tepat (Sekachev dkk., 2020).
+Tantangan utama anotasi adalah menentukan batas instansi daun yang tertutup sebagian (partially occluded). Pendekatan yang diterapkan adalah anotasi berbasis kontur yang terlihat ditambah estimasi bentuk (shape estimation) untuk bagian yang tersembunyi. Anotator mengikuti kontur bagian daun yang masih terlihat, kemudian melengkapi area yang hilang dengan menarik garis perkiraan berdasarkan simetri morfologi daun kelengkeng Itoh yang memiliki bentuk elips memanjang (oblong-elliptic) yang relatif konsisten. Estimasi ini divalidasi silang oleh dua anotator independen untuk memastikan konsistensi ground truth.
+Penelitian ini tidak melakukan rekonstruksi area tersembunyi secara piksel penuh (full amodal completion). Sebaliknya, mask ground truth mencakup seluruh perkiraan batas fisik daun termasuk bagian yang tertutup. Pendekatan ini konsisten dengan metodologi amodal instance segmentation yang terbukti efektif pada kasus oklusi tanaman padat (Li dkk., 2022; Luo dkk., 2023).
+Citra Asli RGB				(b) Visualisasi anotasi 
+Contoh Visualisasi Anotasi
+Hasil dari anotasi ini adalah masker biner dan koordinat bounding box yang memungkinkan model Prop-DeOccNet untuk mengenali setiap daun sebagai instansi yang terpisah. Data ini menjadi "kunci jawaban" selama fase pelatihan.
+Pra-pemrosesan Citra dan Augmentasi
+Sebelum citra diproses oleh jaringan saraf, dilakukan standarisasi dimensi dan normalisasi nilai piksel. Proses ini sangat penting untuk memastikan bahwa bobot jaringan memulai pembelajaran dari rentang nilai yang seragam, sehingga mempercepat proses konvergensi. Selain normalisasi, diterapkan kombinasi teknik augmentasi untuk meningkatkan ketangguhan model terhadap variasi di lapangan.
+Normalisasi Citra
+Citra input diubah ukurannya (resize) menjadi 512 x 512 piksel. Selanjutnya, dilakukan normalisasi nilai piksel menggunakan teknik Z-score sebagaimana ditunjukkan pada Persamaan 3.1:
+(3.1)
+Keterangan : 
+: nilai hasil normalisasi
+ : nilai piksel asli
+ : rata-rata saluran warna
+ : standar deviasi
+Berdasarkan Persamaan 3.1, jika kita memiliki nilai piksel asli , rata-rata saluran warna , dan standar deviasi , maka:
+Nilai hasil normalisasi 1.5 inilah yang akan menjadi input bagi lapisan konvolusi pertama di dalam model Prop-DeOccNet.
+Augmentasi Geometris 
+Untuk menangani variasi pengambilan data, diterapkan Geometric Augmentation yang meliputi:
+Scaling: Mengubah skala citra secara acak untuk mensimulasikan variasi jarak kamera (30-50 cm).
+Rotation & Flip: Memutar dan membalik citra secara horizontal/vertikal untuk menangani variasi orientasi daun alami pada kanopi.
+Mengingat dataset hanya berjumlah 200 citra, strategi augmentasi diterapkan secara agresif untuk mencegah overfitting. Detail setiap teknik:
+Random Crop: Pemotongan acak dengan rasio 0.6–1.0 dari ukuran citra asli, dilanjutkan resize ke 512×512 piksel. Teknik ini memaksa model mengenali daun dari berbagai sudut pandang parsial.
+Horizontal & Vertical Flip: Pembalikan horizontal (p=0.5) dan vertikal (p=0.3) untuk menangani variasi orientasi daun alami.
+Rotation: Rotasi acak –30° hingga +30° untuk mensimulasikan kemiringan sudut pengambilan foto.
+Scaling: Pengubahan skala acak (0.7–1.3×) untuk mensimulasikan variasi jarak kamera 30–50 cm.
+Color Jitter: Variasi kecerahan (±20%), kontras (±20%), dan saturasi (±15%) untuk mensimulasikan kondisi pencahayaan lapangan.
+Mosaic Augmentation
+Untuk mensimulasikan kondisi kanopi yang sangat rapat, diterapkan teknik Mosaic Augmentation. Teknik ini menggabungkan empat potongan citra yang berbeda ke dalam satu kanvas input. Hal ini memaksa model untuk mempelajari konteks batas objek yang terpotong dan meningkatkan kepadatan objek dalam satu kali proses pelatihan.
+Contoh Proses Mosaic Augmentation
+Teknik Mosaic Augmentation mampu menciptakan kondisi kepadatan objek yang sangat tinggi dalam satu frame. Sehingga bisa melatih model untuk mengenali daun hanya dengan potongan fitur yang sangat terbatas. Selain itu, teknik ini juga mampu memaksimalkan varian posisi dan orientasi daun dalam satu batch pelatihan.
+Arsitektur Model (De-Overlapping Mechanism)
+Bagian inti dari algoritma ini adalah arsitektur jaringan saraf yang dimodifikasi. Prop-DeOccNet dibangun menggunakan backbone ResNet-101 yang diikuti oleh modul Atrous Spatial Pyramid Pooling (ASPP) dan head khusus untuk menangani tumpang tindih.
+ResNet dan Blok Residual
+Arsitektur ResNet dirancang untuk mengatasi masalah degradasi pada jaringan saraf yang sangat dalam, di mana penambahan lapisan justru seringkali menurunkan akurasi. Blok residual memungkinkan jaringan untuk mempelajari pemetaan residual daripada mencoba memetakan fungsi identitas secara langsung. Hal ini memudahkan proses optimasi dan mempercepat konvergensi model selama fase pelatihan.
+Dalam konteks segmentasi daun, blok residual menjaga agar detail-detail halus seperti garis tepi tidak hilang saat melewati puluhan lapisan konvolusi. Informasi dari lapisan awal yang mengandung detail spasial tinggi digabungkan dengan fitur abstrak dari lapisan dalam. Hal ini memberikan pemahaman yang komprehensif bagi model mengenai struktur fisik daun tanaman yang sedang diamati.
+Secara matematis, prinsip dasar blok residual yang memungkinkan sinyal input dilewatkan secara langsung ke lapisan yang lebih dalam dinyatakan dalam persamaan:
+(3.2)
+Keterangan : 
+	: nilai hasil blok residual
+ : nilai input (identity mapping)
+ : fungsi residual yang dipelajari oleh blok konvolusi
+ : kumpulan bobot (weights) dari lapisan konvolusi
+Sebagai ilustrasi, jika sebuah blok residual menerima nilai input  dan fungsi residual menghasilkan nilai , maka:
+Mekanisme residual secara efektif memungkinkan penggunaan kembali fitur (feature reuse) yang relevan di sepanjang jaringan saraf. Dalam lingkungan lapangan yang penuh dengan gangguan, kemampuan untuk mempertahankan informasi fitur asli sangatlah penting. Mekanisme ini memastikan bahwa gradien pembelajaran dapat mengalir dengan baik ke lapisan-lapisan awal, mencegah masalah vanishing gradient (Mahaur dkk., 2023).
+Ekstraksi Fitur Multiskala
+Diagram Blok Prop-DeOccNet
+Modul ASPP diadopsi sebagai komponen vital untuk mitigasi degradasi spasial dan secara efektif menangani variasi skala objek. Variasi skala ini sering kali disebabkan oleh nastic movements atau perubahan orientasi daun pada tanaman yang merespon stimulus lingkungan. ASPP memungkinkan model untuk mengekstraksi fitur pada berbagai resolusi tanpa kehilangan detail spasial yang penting (Chen dkk., 2016).
+ASPP memanfaatkan teknik konvolusi dilatasi (atrous convolution) untuk memperluas jangkauan pandang filter tanpa harus menurunkan resolusi fitur secara berlebihan. Dengan menerapkan berbagai nilai laju dilatasi secara paralel, modul ini memungkinkan model untuk secara simultan menangkap konteks global (informasi skala besar) dan detail lokal (informasi skala kecil) dari citra kanopi (Chen dkk., 2016).
+Kombinasi ini sangat penting untuk keberhasilan mengenali bagian daun yang tertutup sebagian. Dengan bidang pandang yang luas, model dapat memahami bahwa sebuah ujung daun adalah bagian dari instansi daun tertentu berdasarkan konteks area di sekitarnya. Modul ASPP ini menjadi kunci dalam mengatasi masalah ambiguitas skala pada lingkungan vegetasi rimbun (Yang dkk., 2023).
+Pemanfaatan multiskala dalam modul ASPP diimplementasikan dengan menerapkan beberapa laju dilatasi (rate) yang berbeda secara paralel, misalnya r = 6, 12, 18, 24. Laju dilatasi yang kecil berfungsi untuk menangkap detail lokal atau daun yang berukuran kecil, sementara laju yang lebih besar memungkinkan filter mencakup area yang luas untuk menangkap konteks global atau daun berukuran besar.
+Mekanisme ini sangat efisien karena jumlah parameter yang digunakan tetap sama meskipun jangkauan pandang filter meningkat secara drastis. Hal ini memungkinkan ekstraksi fitur yang kaya tanpa memicu ledakan komputasi. Dengan demikian, model Prop-DeOccNet tetap dapat berjalan secara efisien namun tetap memiliki pemahaman spasial yang sangat mendalam terhadap struktur kanopi tanaman. Visualisasi mekanisme kerja ASPP dengan berbagai tingkat dilatasi dapat dilihat pada Gambar 3.5 berikut.
+Visualisasi Mekanisme ASPP dengan Berbagai Laju Dilatasi
+Berdasarkan visualisasi pada Gambar 3.5, modul ini bekerja dengan menerapkan beberapa filter konvolusi secara paralel pada input feature map yang sama, namun dengan laju dilatasi (rate) yang berbeda-beda:
+Variasi Laju Dilatasi : Gambar menunjukkan empat tingkat dilatasi, yaitu 
+Kotak dengan Rate: 6 (kiri) memiliki celah piksel yang sempit, berfungsi menangkap detail lokal atau daun berukuran kecil.
+Kotak dengan Rate: 24 (kanan) memiliki celah piksel yang sangat lebar (ditunjukkan oleh panah merah), memungkinkan filter mencakup area yang luas untuk menangkap konteks global atau daun berukuran besar.
+Receptive Field Konsentris: Bagian bawah gambar mengilustrasikan bagaimana kombinasi rate tersebut menciptakan pandangan konsentris (kotak-kotak berwarna pada input feature map). Hal ini memungkinkan model untuk melihat objek dalam berbagai skala resolusi secara bersamaan.
+Efisiensi Parameter: Meskipun jangkauan pandang pada Rate: 24 sangat luas, jumlah parameter yang digunakan tetap sama dengan Rate: 6 (hanya mengambil sampel pada titik hijau). Ini memungkinkan ekstraksi fitur yang kaya tanpa ledakan komputasi.
+Dengan strategi ini, model dapat mengenali bagian daun yang tertutup sebagian (occluded) dengan mengandalkan konteks dari area sekitarnya yang ditangkap oleh filter dengan rate besar.
+Feature Fusion 
+Sesuai dengan alur pada Gambar 3.2, dilakukan tahapan Feature Fusion untuk menggabungkan fitur semantik dari modul ASPP dengan fitur spasial dari lapisan awal ResNet. Proses penggabungan ini (biasanya melalui concatenation) memastikan informasi bentuk global daun bersinergi dengan detail tepi yang tajam. Hal ini krusial untuk mempertahankan integritas struktur daun sebelum diproses oleh bagian head model.
+Boundary Attention Head
+Untuk menangani masalah under-segmentation di mana model gagal memisahkan dua atau lebih objek yang saling berhimpitan di area oklusi padat, digunakan mekanisme Boundary Attention (Atensi Batas). Pendekatan ini merupakan strategi yang memperkuat fitur-fitur tepi objek, yang seringkali terdegradasi pada lapisan dalam jaringan saraf. Atensi batas memaksa model untuk lebih fokus pada area transisi antar daun.
+Mekanisme ini bekerja dengan memprediksi peta probabilitas batas  secara terpisah dari peta fitur segmentasi utama. Peta batas ini kemudian digunakan sebagai gerbang atensi untuk memberikan bobot pada fitur segmentasi . Secara konseptual, fitur yang diperbaiki  dapat direpresentasikan sebagai:
+(3.3)
+Keterangan : 
+	: nilai hasil fitur segmentasi yang telah diperkuat/diperbaiki
+ 	: fitur segmentasi utama sebelum diberikan atensi batas
+		: operasi perkalian elemen demi elemen (element-wise multiplication)
+ 		: fungsi aktivasi Sigmoid
+	: Peta probabilitas batas (boundary map) yang diprediksi oleh Boundary Head
+Mekanisme ini secara eksplisit memaksa model untuk memisahkan instansi yang memiliki batas berhimpitan dengan memberikan penekanan khusus pada piksel tepi. Hal ini sejalan dengan strategi decompose-and-recombined yang terbukti efektif pada kasus segmentasi sel yang padat. Strategi tersebut melibatkan pemecahan klaster objek yang tumpang tindih sebelum merekonstruksi ulang masing-masing instansi, sebuah prinsip yang juga diterapkan untuk memecah oklusi daun (Jiang dkk., 2023).
+Yang membedakan pendekatan ini dari segmentasi konvensional adalah sifat prediksi batas yang dilakukan secara amodal. Boundary Attention Head tidak hanya memprediksi tepi daun yang secara visual terlihat (visible boundary), melainkan juga mengestimasi kelanjutan garis batas fisik daun pada bagian yang tertutup oleh daun lain. Kemampuan estimasi ini dimungkinkan oleh konteks spasial luas yang disediakan oleh modul ASPP, yaitu filter dengan laju dilatasi besar (r = 18, r = 24) menangkap area di sekitar oklusi, sehingga model dapat menyimpulkan kelanjutan morfologi daun kelengkeng Itoh yang memiliki bentuk oblong-elliptic yang relatif konsisten. 
+Dengan demikian, output mask Prop-DeOccNet mencakup perkiraan batas fisik penuh setiap instansi daun, termasuk bagian yang tersembunyi, bukan sekadar area yang terlihat. Pendekatan ini konsisten dengan amodal instance segmentation, di mana ground truth anotasi juga disusun dengan estimasi batas penuh daun (termasuk area tersembunyi) sebagaimana dijelaskan pada tahap anotasi data.
+Mengacu pada Persamaan 3.3, misalkan pada sebuah piksel di area tumpang tindih, fitur segmentasi awal adalah . Jika model memprediksi probabilitas batas tinggi   dengan nilai ,  maka penguatannya:
+Nilai fitur yang diperkuat menjadi 1.026, memastikan piksel tersebut mendapatkan perhatian lebih untuk diproses sebagai batas pemisah instansi daun.
+Skema Mekanisme Boundary Attention
+Fitur segmentasi awal            (b) Peta atensi batas		(c) Hasil akhir setelah 
+     penggabungan
+Visualisasi Proses Internal Model
+Fungsi Kerugian (Loss Function)
+Optimasi model ketika berhadapan dengan data segmentasi yang cenderung tidak seimbang memerlukan penyesuaian pada fungsi kerugian. Dalam citra kanopi, piksel latar belakang seringkali jauh lebih banyak daripada piksel objek. Oleh karena itu, digunakan Focal Loss yang dirancang untuk mengatasi masalah class imbalance dan memfokuskan pembelajaran model pada contoh-contoh yang sulit, seperti piksel tepi yang kabur (Buttner dkk., 2024).
+Selain itu, digunakan juga Dice Loss yang mengoptimalkan irisan area prediksi dan ground truth secara langsung. Dice Loss sangat efektif untuk menjaga konsistensi bentuk global objek karena ia mengukur tingkat tumpang tindih area secara keseluruhan. Kombinasi kedua fungsi kerugian ini memastikan model tidak hanya akurat dalam mengklasifikasikan piksel, tetapi juga menghasilkan bentuk masker yang solid.
+Focal Loss 
+Dirancang untuk mengatasi masalah class imbalance dan memfokuskan pembelajaran model pada contoh-contoh yang sulit (hard examples). Dalam konteks ini, contoh sulit mencakup piksel tepi yang kabur atau piksel pada area oklusi.
+Mekanisme: Focal Loss bekerja dengan memberikan bobot yang lebih rendah kepada contoh yang mudah (easy examples) dan bobot yang lebih tinggi kepada contoh yang sulit atau yang salah klasifikasi. Ini membantu mengurangi sensitivitas model terhadap noise fotometrik yang sering terjadi di lingkungan lapangan.
+Persamaan: 
+(3.4)
+	: nilai rugi (loss) hasil perhitungan Focal Loss
+ 		: balancing factor
+		: estimasi probabilitas model untuk kelas yang benar
+ : faktor pemfokusan (modulating factor) 
+Sebagai ilustrasi numerik untuk menggambarkan bagaimana model menangani tingkat kesulitan, berikut adalah contoh perhitungannya:
+Misalkan ditetapkan parameter  dan faktor 
+Kasus Mudah : Model sangat yakin bahwa piksel tersebut adalah daun.
+Nilai loss ditekan menjadi sangat kecil agar model tidak membuang energi pada data yang sudah dikuasai.
+Kasus Sulit : Model kesulitan mengenali piksel tersebut adalah daun..
+Nilai loss tetap tinggi, memaksa model untuk memberikan perhatian lebih pada area yang sulit tersebut.
+Berdasarkan hasil perhitungan di atas, terlihat bahwa model secara otomatis memberikan penalti yang jauh lebih besar pada piksel yang sulit dikenali dibandingkan piksel yang sudah diklasifikasikan dengan benar.
+Dice Loss
+Mengoptimalkan irisan area prediksi  dan ground truth  secara langsung untuk menjaga konsistensi bentuk global objek, dan sangat efektif untuk mengatasi ketidakseimbangan kelas.
+Mekanisme: Dice Loss secara langsung memaksimalkan koefisien Dice (ukuran tumpang tindih) antara mask yang diprediksi dan mask kebenaran dasar. Ini lebih stabil daripada Cross-Entropy Loss untuk masalah segmentasi yang tidak seimbang.
+Persamaan:
+(3.5)
+: nilai rugi (loss) hasil perhitungan Dice Loss
+ 	: jumlah total piksel dalam masker prediksi
+	: jumlah total piksel dalam masker aktual
+Sebagai ilustrasi untuk menggambarkan bagaimana model mengevaluasi kesamaan antara area prediksi dengan data aktual, berikut adalah contoh perhitungannya:
+Misalkan kita memiliki sebuah objek daun pada citra dengan data  dan , Maka perhitungan Dice Loss adalah:
+Nilai Dice Loss sebesar 0.143 menunjukkan bahwa tingkat kesalahan segmentasi cukup rendah. Semakin kecil nilai  (mendekati 0), maka semakin identik bentuk prediksi model dengan bentuk asli daun tersebut. Dalam kasus oklusi, metrik ini sangat efektif karena fokus pada seberapa banyak area objek yang berhasil "ditembus" atau dikenali dengan benar oleh model.
+ Boundary Loss
+Operator Laplacian adalah operator turunan orde kedua yang sangat sensitif terhadap perubahan intensitas piksel yang cepat, seperti transisi dari area daun (nilai 1) ke latar belakang (nilai 0). Secara matematis, Laplacian dari sebuah citra atau masker  didefinisikan sebagai:
+(3.6)
+Keterangan:
+: hasil operasi Laplacian yang merepresentasikan peta tepi (boundary map)
+ 	: intensitas piksel pada citra atau masker biner daun
+ : turunan parsial kedua terhadap sumbu horizontal (x)
+ : turunan parsial kedua terhadap sumbu vertikal (y)
+Dalam implementasi digital, hal ini direpresentasikan menggunakan Kernel Konvolusi (matriks) . Contoh kernel yang sering digunakan adalah:
+Input: Masker biner daun hasil anotasi manual. 
+Proses: Kernel  digeser di atas seluruh piksel masker. 
+Output: Piksel di tengah area daun (semua tetangga bernilai sama) akan menghasilkan nilai 0. Namun, piksel di bagian tepi daun (tetangganya berbeda nilai) akan menghasilkan nilai tinggi. 
+Hasil Akhir: Garis tepi yang tipis dan presisi yang akan menjadi kunci jawaban bagi Boundary Branch pada model Prop-DeOccNet.
+Optimasi bobot model dilakukan menggunakan kombinasi Focal Loss, Dice Loss, dan Boundary Loss. Kombinasi ini bertujuan menyeimbangkan akurasi klasifikasi piksel dan ketegasan batas objek. Focal Loss membantu model fokus pada piksel sulit seperti tepi yang kabur, sementara Dice Loss menjaga integritas bentuk global dari masker daun yang dihasilkan.
+Komponen Focal Loss digunakan untuk mengatasi dominasi piksel latar belakang dan memfokuskan pembelajaran pada piksel yang sulit (hard examples). Sedangkan Boundary Loss bertugas secara spesifik menghukum prediksi yang memiliki batas tidak akurat atau menyatu pada area oklusi.
+Tanpa Boundary Loss 	   	(b) Dengan Boundary Loss
+Ilustrasi Pengaruh Boundary Loss.
+Selama pelatihan, total loss dihitung pada setiap iterasi untuk memperbarui parameter jaringan melalui backpropagation. Dengan menetapkan penalti yang lebih besar pada kesalahan di area batas, model dipaksa untuk menghasilkan kontur yang tipis dan akurat. Strategi ini sangat krusial untuk keberhasilan pemisahan daun pada kondisi kanopi yang sangat rimbun di lapangan. Fungsi kerugian total dirumuskan pada Persamaan 3.7:
+(3.7)
+Keterangan:
+	: nilai Total Loss yang digunakan untuk memperbarui bobot model
+	: nilai Focal Loss untuk menangani ketidakseimbangan kelas 
+	: nilai Dice Loss untuk mengukur kemiripan bentuk segmentasi secara global
+	: nilai Boundary Loss yang berfokus pada ketajaman dan presisi garis tepi
+Berdasarkan Persamaan 3.7 (asumsi bobot seimbang), jika dalam satu iterasi diperoleh nilai ,  , dan  maka total loss adalah:
+Nilai 0.35 ini menjadi dasar bagi algoritma optimasi untuk melakukan penyesuaian bobot neuron agar kesalahan pada iterasi berikutnya semakin mengecil.
+Mekanisme Pembaruan Bobot (Backpropagation)
+Sesuai dengan alur iteratif pada Gambar 3.2, nilai total loss yang diperoleh tidak hanya menjadi indikator performa, tetapi juga dasar untuk memperbarui bobot jaringan. Proses ini memastikan model Prop-DeOccNet semakin presisi dalam setiap iterasi.
+Prinsip Gradient Descent
+Pembaruan bobot dilakukan menggunakan algoritma optimasi (misalnya Adam Optimizer) yang bekerja berdasarkan prinsip Gradient Descent. Perubahan bobot ditentukan oleh nilai negatif dari gradien fungsi kerugian terhadap bobot tersebut, yang dirumuskan sebagai berikut:
+(3.8)
+Selanjutnya, bobot baru untuk iterasi berikutnya dihitung dengan menjumlahkan bobot lama dengan nilai perubahannya:
+(3.9)
+Keterangan:
+	: nilai bobot setelah diperbarui (untuk iterasi berikutnya)
+	: nilai bobot saat ini sebelum pembaruan 
+	: besarnya perubahan bobot yang dihasilkan
+		: learning rate
+	: turunan parsial loss terhadap bobot (gradien)
+Sebagai ilustrasi numerik mengenai proses penyesuaian parameter pada lapisan Boundary Attention Head, misalkan kita meninjau satu bobot  dengan kondisi , ,  maka, perubahan bobot  adalah:
+=-0.008
+Sehingga, nilai bobot baru yang akan digunakan adalah:
+Implementasi pada Alur Sistem
+Penyesuaian bobot sebesar -0.008 tersebut dilakukan pada jutaan parameter di dalam ResNet-101, ASPP, dan Boundary Head. Berdasarkan alur pada flowchart Gambar 3.2, proses ini memiliki dua kriteria akhir:
+Jika "Ya" (Konvergen): Perubahan bobot sudah sangat kecil (mendekati nol), sehingga model dianggap telah mencapai titik optimal dan siap mengeluarkan Precise Instance Mask.
+Jika "Tidak": Nilai  (dalam contoh ini 0,492) akan digunakan pada iterasi selanjutnya. Panah balik pada flowchart menunjukkan model melakukan forward pass ulang untuk menekan nilai loss lebih rendah lagi.
+Dampak terhadap Segmentasi Oklusi
+Secara fungsional, pembaruan bobot ini memaksa filter konvolusi pada Boundary Head untuk lebih sensitif terhadap piksel yang berada di antara dua daun. Jika sebelumnya model melakukan kesalahan dengan menganggap dua daun sebagai satu objek (under-segmentation), maka setelah pembaruan bobot, filter akan memberikan respons yang lebih kuat pada garis pemisah. Hal ini secara bertahap akan menghasilkan nilai Boundary Loss yang lebih rendah dan kontur daun yang lebih akurat pada iterasi-iterasi berikutnya.
+Rancangan Pengujian
+Pengujian sistem dilakukan untuk memvalidasi hipotesis bahwa Prop-DeOccNet mampu menangani oklusi lebih baik dibandingkan model standar. Rancangan pengujian mencakup skenario data dengan tingkat kepadatan yang berbeda untuk mengukur batas kemampuan model. Hasil pengujian ini akan memberikan bukti kuantitatif mengenai efektivitas mekanisme dekomposisi yang diusulkan.
+Evaluasi kinerja menggunakan metrik IoU untuk mengukur akurasi luas area dan BF Score untuk mengukur presisi kontur batas. Penggunaan kedua metrik ini menjamin bahwa model tidak hanya menebak lokasi daun dengan benar, tetapi juga mampu menggambar batas daun secara presisi, yang merupakan aspek fundamental bagi pengukuran fenotipe tanaman yang valid.
+Penggunaan metrik ini menjamin bahwa model menetapkan batas objek yang akurat, yang merupakan aspek fundamental untuk pengukuran fenotipe kuantitatif yang presisi, seperti luas daun atau kepadatan kanopi, dalam pemuliaan tanaman.
+Skenario Pengujian
+Pengujian dibagi menjadi dua skenario berdasarkan tingkat kepadatan kanopi untuk mengukur robustitas model:
+Skenario A (Sparse/Jarang): Pengujian pada citra dengan tingkat tumpang tindih < 30%. Skenario ini bertujuan menetapkan performa baseline.
+Skenario B (Dense/Padat): Pengujian pada citra dengan tingkat tumpang tindih > 30% dan < 60%. 
+Skenario C (Severe Occlusion/Parah): Pengujian pada citra dengan tingkat tumpang tindih > 60%. Untuk mensimulasikan kondisi ini, digunakan teknik Mosaic Augmentation yang menggabungkan empat potongan citra dengan tingkat oklusi tinggi ke dalam satu kanvas input. Ini adalah skenario utama untuk membuktikan efektivitas fitur De-Overlapping.
+Hasil perbandingan antara kedua skenario ini akan menunjukkan seberapa tahan model terhadap kompleksitas vegetasi. Model yang robust diharapkan tidak mengalami penurunan akurasi yang drastis saat beralih dari skenario jarang ke skenario padat. Data dari pengujian ini akan sangat berharga untuk mengevaluasi kesiapan sistem untuk diimplementasikan secara nyata di lapangan pertanian.
+Skenario Pengujian Ablasi (Ablation Study)
+Untuk memvalidasi bahwa setiap komponen arsitektur yang diusulkan memberikan kontribusi nyata terhadap peningkatan performa, dilakukan studi ablasi. Studi ini membandingkan performa empat varian model secara terkontrol, di mana setiap varian menonaktifkan satu komponen tertentu. Seluruh varian dilatih dan diuji menggunakan dataset, pembagian data, dan hyperparameter yang identik agar hasil perbandingan valid.
+Tabel 3.1 Varian Model yang Diuji
+Detail teknis penggantian komponen:
+Menghilangkan ASPP (untuk M2): Modul ASPP digantikan dengan satu lapisan Global Average Pooling diikuti 1×1 convolution untuk mempertahankan dimensi feature map. Ini adalah kondisi setara dengan neck standar tanpa multi-scale context.
+Menghilangkan Boundary Attention (untuk M1): Boundary Attention Head dan Boundary Loss dihilangkan. Fitur segmentasi diproses langsung tanpa gate atensi batas (Persamaan 3.3 dilewati).
+Hipotesis Ablation Study:
+H1: M3 > M1 dalam BF Score → membuktikan Boundary Attention Head berkontribusi pada ketajaman kontur
+H2: M3 > M2 dalam mAP dan IoU pada oklusi parah → membuktikan ASPP berkontribusi pada penangkapan konteks multi-skala
+H3: M3 > M0 secara keseluruhan → membuktikan Prop-DeOccNet secara keseluruhan superior terhadap baseline
+Rancangan Tabel Hasil Ablation Study
+Hasil ablation study disajikan dalam tabel berikut (akan diisi setelah melakukan uji coba) :
+Tabel 3.2 Hasil Ablation Study pada Seluruh tingkat Oklusi
+Tabel 3.3 Hasil Ablation Study Berdasarkan Tingkat Oklusi
+Catatan: ΔBF = selisih BF Score varian terhadap baseline M0 (nilai positif menunjukkan peningkatan).
+Rancangan Analisis Setiap Varian
+Setelah mendapatkan angka hasil eksperimen, analisis akan dilakukan berdasarkan rancangan berikut:
+Analisis Kontribusi ASPP: Membandingkan M1 vs M0. Jika mAP meningkat signifikan (>2%), maka ASPP terbukti membantu penangkapan fitur multi-skala. Jika peningkatan di oklusi parah lebih besar dari oklusi ringan, ini memperkuat argumen bahwa ASPP membantu merekonstruksi konteks global pada kondisi tersumbat. 
+Analisis Kontribusi Boundary Attention: Membandingkan M2 vs M0. Jika BF Score meningkat signifikan (>3%), maka Boundary Attention Head terbukti meningkatkan presisi kontur. Peningkatan yang signifikan pada skenario oklusi sedang-parah menguatkan klaim bahwa mekanisme ini efektif memisahkan instansi yang berhimpitan. 
+Analisis Sinergi Komponen: Membandingkan M3 vs (M1 + M2 - M0). Jika M3 lebih baik dari penjumlahan kontribusi individual, ini membuktikan ada efek sinergi antara ASPP dan Boundary Attention.
+Analisis Efisiensi: Melakukan perhitungan waktu inferensi (ms/gambar) dan jumlah parameter (juta) untuk setiap varian, untuk menunjukkan bahwa peningkatan performa M3 tidak terlalu mahal secara komputasi.
+Metrik Evaluasi
+Evaluasi dilakukan untuk mengukur performa model secara komprehensif, mulai dari deteksi global hingga ketepatan kontur lokal. Sesuai dengan tahapan pada Gambar 3.1, metrik yang digunakan sebagai standar validasi adalah mAP, IoU, dan BF Score.
+mean Average Precision (mAP) 
+mAP digunakan untuk mengevaluasi kemampuan model dalam mendeteksi seluruh instansi daun pada berbagai nilai ambang batas (threshold). Metrik ini memberikan gambaran reliabilitas model secara keseluruhan dalam mengenali objek di dalam citra.
+(3.10)
+Keterangan:
+ 	: rata-rata nilai presisi di seluruh kelas
+		: jumlah kelas objek
+	: Average Precision atau luas area di bawah kurva Precision-Recall
+Berdasarkan Persamaan 3.10, Jika model diuji pada berbagai tingkat kesulitan dan menghasilkan rata-rata presisi sebesar 0.88, maka nilai mAP adalah 0.88. Jika nilai ini memenuhi standar minimal yang ditetapkan, maka proses pelatihan dinyatakan selesai dan alur penelitian berlanjut ke tahap analisis hasil akhir.
+Intersection over Union (IoU)
+IoU digunakan untuk mengukur sejauh mana area masker prediksi tumpang tindih dengan area aktual (ground truth). Metrik ini merepresentasikan akurasi segmentasi area daun secara spasial.
+(3.11)
+Keterangan:
+	: area piksel hasil prediksi model
+	: area piksel pada ground truth (aktual)
+Sebagai ilustrasi untuk mengukur ketepatan lokasi prediksi model, berikut adalah contoh perhitungannya: Misalkan sebuah daun memiliki luas asli 100 piksel (). Model memprediksi area seluas 110 piksel (), di mana 90 piksel di antaranya saling bertumpukan tepat dengan data asli. Maka perhitungan IoU adalah:
+BF Score (Boundary F1 Score) 
+Akurasi kontur daun dievaluasi menggunakan BF Score. Metrik ini sangat krusial dalam penelitian ini karena lebih sensitif terhadap ketepatan garis tepi objek, terutama pada area yang mengalami oklusi parah di mana batas antar daun sering kali sulit dibedakan.
+IoU mengukur tumpang tindih area secara global, sebuah mask yang "menggelembung" sedikit keluar dari batas daun tetap mendapat IoU tinggi meski konturnya tidak akurat. BF Score secara eksklusif mengevaluasi ketepatan piksel-piksel batas. Pada kasus oklusi, di mana dua daun hanya dipisahkan garis batas setipis 1–3 piksel — IoU tidak mampu membedakan apakah dua instansi sudah terpisah benar atau masih menyatu. BF Score langsung menghukum kesalahan pada garis pemisah tersebut, menjadikannya metrik yang jauh lebih sensitif dan relevan untuk tujuan penelitian ini (Csurka dkk., 2013).
+(3.12)
+Keterangan:
+	: nilai Boundary F1 Score
+	: keakuratan piksel tepi yang diprediksi dibandingkan aktual
+		: keberhasilan model menemukan piksel tepi yang seharusnya ada
+Berdasarkan Persamaan 3.12, jika pada sebuah daun di area oklusi diperoleh nilai presisi kontur 0.82 dan recall kontur 0.88, maka:
+Nilai BF Score sebesar 0.85 menunjukkan bahwa model memiliki kemampuan yang sangat baik dalam menetapkan batas daun yang akurat meskipun dalam kondisi saling bertumpukan. Dengan memastikan kontur yang presisi, data fenotipe yang diekstraksi akan memiliki tingkat validitas yang tinggi untuk pemuliaan tanaman
+Nilai BF Score rendah				(b) Nilai BF Score tinggi
+Ilustrasi evaluasi BF Score
+BAB IV
+JADWAL PENELITIAN
+Penelitian ini dilaksanakan selama 6 bulan dengan rincian kegiatan dan jadwal penelitian pada Tabel 4.1.
+Tabel 4.1 Jadwal Penelitian
+DAFTAR PUSTAKA
+Barth, R., Hemming, J. & van Henten, E.J., 2018, Optimising Deep Learning for Plant Instance Segmentation, Biosystems Engineering, 171, 142–159. doi: http://doi.org/10.1016/j.biosystemseng.2018.04.014
+Büttner, M., Schneider, L., Krasowski, A., Pitchika, V., Krois, J., Meyer-Lueckel, H., & Schwendicke, F., 2024, Conquering class imbalances in deep learning-based segmentation of dental radiographs with different loss functions, Journal of Dentistry, 148, 105178. doi: https://doi.org/10.1016/j.jdent.2024.105063
+Blok, P. M., van Henten, E. J., van Evert, F. K., & Kootstra, G. (2021). Image-based size estimation of broccoli heads under varying degrees of occlusion. Biosystems Engineering, 208, 213–233. https://doi.org/10.1016/j.biosystemseng.2021.06.001  
+Charisis, C. & Argyropoulos, S., 2024, Deep learning-based instance segmentation architectures in agriculture: A review of the scopes and challenges, Computers and Electronics in Agriculture, 216, 108500. doi: https://doi.org/10.1016/j.atech.2024.100448
+Chen, L.C., Papandreou, G., Kokkinos, I., Murphy, K. & Yuille, A.L., 2016, DeepLab: Semantic Image Segmentation with Deep Convolutional Nets, Atrous Convolution, and Fully Connected CRFs, IEEE Transactions on Pattern Analysis and Machine Intelligence, 40(4), 834–848. doi: https://doi.org/10.1109/TPAMI.2017.2699184
+Chen, L.C., Zhu, Y., Papandreou, G., Schroff, F. & Adam, H., 2018, Encoder-Decoder with Atrous Separable Convolution for Semantic Image Segmentation, Proceedings of the European Conference on Computer Vision (ECCV), 801–818. doi: http://doi.org/10.1007/978-3-030-01234-2_49
+Csurka, G., Larlus, D. & Perronnin, F., 2013, What is a good evaluation measure for semantic segmentation?, Proceedings of the British Machine Vision Conference (BMVC), 32.1–32.11. doi: https://doi.org/10.5244/C.27.32 
+He, K., Zhang, X., Ren, S. & Sun, J., 2016, Deep Residual Learning for Image Recognition, Proceedings of the IEEE Conference on CVPR, 770–778. doi: https://doi.org/10.1109/CVPR.2016.90 
+Howard, A., Sandler, M., Chu, G., et al., 2019, Searching for MobileNetV3, Proceedings of the IEEE/CVF ICCV, 1314–1324. doi: https://doi.org/10.1109/ICCV.2019.00140 
+Jiang, H., Song, L., Wang, S., Wang, C., Chen, J., & Zhou, G., 2023, DoNet: Deep De-Overlapping Network for Cytology Instance Segmentation, IEEE Transactions on Medical Imaging, 42(11), 3350-3362. doi: https://doi.org/10.48550/arXiv.2303.14373
+Kuznichov, N., Zvirin, A., Honen, Y. & Kimmel, R., 2019, Data Augmentation for Leaf Segmentation and Counting Tasks in Rosette Plants, Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops, 0–0. doi: https://doi.org/10.48550/arXiv.1903.08583
+Li, D., Li, J., Xiang, S. & Pan, A., 2019, An Overlapping-Free Leaf Segmentation Method for Plant Point Clouds, IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing, 12(6), 1850–1863. doi: https://doi.org/10.48550/arXiv.1908.04018
+Li, D., Shi, G., Li, J., Chen, Y., Zhang, Y., Wang, S. & Yan, J., 2022, PSegNet: Simultaneous Semantic and Instance Segmentation for Point Clouds of Plants, Plant Phenomics, 2022, 9787643. doi: https://doi.org/10.34133/2022/9787643
+Li, Y., Wang, H., Hu, G., Fu, W. & Zhao, J., 2023, Dynamic Mosaic algorithm for data augmentation, Mathematical Biosciences and Engineering, 20(4), 7120–7138. doi: https://doi.org/10.3934/mbe.2023311
+Luo, L., Li, Y., Wu, X., Li, J. & Luo, S., 2023, Eff-3DPSeg: 3D Organ-Level Plant Shoot Segmentation Using Annotation-Efficient Deep Learning, ISPRS Journal of Photogrammetry and Remote Sensing, 203, 145–158. doi: https://doi.org/10.48550/arXiv.2212.10263
+Ma, R., Zhang, J., Wu, P., Cheng, J., Lu, H., He, L. & Zhang, Y., 2023, Local refinement mechanism for improved plant leaf segmentation in cluttered backgrounds, Biosystems Engineering, 229, 112–125. doi: https://doi.org/10.3389/fpls.2023.1211075
+Mahaur, B., Mishra, K.K. & Singh, N., 2023, Improved Residual Network based on norm-preservation for visual recognition, Neural Networks, 158, 252–271. doi: https://doi.org/10.1016/j.neunet.2022.10.023
+Martin, D., Fowlkes, C. & Malik, J., 2004, Learning to Detect Natural Image Boundaries Using Local Brightness, Color, and Texture Cues, IEEE TPAMI, 26(5), 530–549. doi: https://doi.org/10.1109/TPAMI.2004.1273918 
+Scharr, H., Minervini, M., French, A. P., Klukas, C., Kramer, D. M., Liu, X., Luengo, I., Pape, J. M., Polder, G., Vukadinovic, D., Yin, X. & Tsaftaris, S. A., 2016, Leaf segmentation in plant phenotyping: a collation study, Machine Vision and Applications, 27(4), 585–606. doi: http://doi.org/10.1007/s00138-015-0737-3
+Sekachev, B., Manovich, N., Zhavoronkov, V., et al., 2020, opencv/cvat: v1.1.0, Zenodo. doi: https://doi.org/10.5281/zenodo.4009388 
+Wang, J., Wu, S. & Chen, Z., 2024, RAAWC-UNet: An apple leaf and disease segmentation method based on residual attention and atrous spatial pyramid pooling improved UNet, Computers and Electronics in Agriculture, 216, 108518. doi: http://doi.org/10.3389/fpls.2024.1305358
+Ward, D., Moghadam, P. & Hudson, N., 2018, Deep Leaf Segmentation Using Synthetic Data, Proceedings of the British Machine Vision Conference (BMVC). doi: https://doi.org/10.48550/arXiv.1807.10931
+Yang, T., Zhang, Z., Chen, J., Wu, G. & Cheng, Y., 2023, An Approach for Plant Leaf Image Segmentation Based on YOLOV8 and the Improved DEEPLABV3+. doi: https://doi.org/10.3390/plants12193438
+Yang, X., Luo, Y., Liu, J., Jiang, Y. & Hu, Y., 2020, Instance Segmentation and Classification Method for Plant Leaf Images Based on ISC-MRCNN and APS-DCCNN, IEEE Access, 8, 201931–201942. doi: https://doi.org/10.1109/ACCESS.2020.3017560
+Yuan, H., Zhu, J., Wang, Q., Cheng, M. & Cai, Z., 2022, An Improved DeepLab v3+ Deep Learning Network Applied to the Segmentation of Grape Leaf Black Rot Spots, Frontiers in Plant Science, 13, 836374. doi: https://doi.org/10.3389/fpls.2022.795410
+Zhu, Y., Zhu, Y., & Li, C., 2021, ASPP-DF-PVNet: Atrous Spatial Pyramid Pooling and Distance-Filtered PVNet for occlusion resistant 6D object pose estimation, Computers & Graphics, 97, 106–114. doi: https://doi.org/10.1016/j.image.2021.116268
+LAMPIRAN 1. PAPER REFERENSI UTAMA
+Chen, L.C., Papandreou, G., Kokkinos, I., Murphy, K. & Yuille, A.L., 2016, DeepLab: Semantic Image Segmentation with Deep Convolutional Nets, Atrous Convolution, and Fully Connected CRFs, IEEE Transactions on Pattern Analysis and Machine Intelligence, 40(4), 834–848. doi: https://doi.org/10.1109/TPAMI.2017.2699184
+LAMPIRAN 2. SURAT PERNYATAAN PENGGUNAAN TOOLS AI
+
+SURAT PERNYATAAN DEKLARASI PENGGUNAAN
+TOOLS GENERATED ARTIFICIAL INTELLIGENCE (AI)
+Saya yang bertanda tangan di bawah ini:
+Nama 		​: Dhea Anggita
+NIM 		​: 24/551349/PPA/06970
+Judul Tesis 	​: Prop-DeOccNet: Pengembangan Arsitektur Deep Learning untuk Segmentasi Daun yang Tumpang Tindih Sebagian
+Dengan ini menyatakan bahwa dalam proses penyusunan Naskah Tugas Akhir dan/atau publikasi ilmiah, saya (beri tanda centang pada yang sesuai):
+☐ Tidak menggunakan tool berbasis Artificial Intelligence (AI) dalam bentuk apa pun.
+☐ Menggunakan tool berbasis Artificial Intelligence (AI) secara terbatas untuk keperluan
+berikut (beri tanda centang pada yang sesuai):
+A. Penggunaan untuk Dukungan Bahasa
+✔ Translasi dari Bahasa Indonesia ke Bahasa Inggris
+☐ Pengecekan tata bahasa (grammar checking)
+✔ Peningkatan kualitas bahasa dan keterbacaan (readability)
+B. Penggunaan untuk Analisis (Wajib Verifikasi Ketat)
+✔ Alat bantu untuk eksplorasi awal atau brainstorming pendekatan analisis 
+☐ Alat bantu dalam proses analisis data/model/simulasi
+Apabila memilih bagian B dalam penggunaan AI, saya menyatakan bahwa seluruh hasil analisis telah diverifikasi secara ketat dan divalidasi secara akademik; interpretasi, pembahasan, dan kesimpulan merupakan hasil pemikiran dan tanggung jawab akademik saya; keakuratan, dan orisinalitas konten menjadi tanggung jawab saya sepenuhnya.
+Saya menyatakan bahwa AI tidak digunakan untuk menghasilkan substansi utama karya ilmiah, termasuk perumusan konsep inti, pembahasan utama, dan penarikan kesimpulan tanpa proses akademik yang sah.
+Demikian surat pernyataan ini saya buat dengan sebenar-benarnya untuk digunakan sebagaimana mestinya sesuai ketentuan akademik di lingkungan Universitas Gadjah Mada.
+Yogyakarta, 17 Maret 2026

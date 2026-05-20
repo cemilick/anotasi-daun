@@ -268,20 +268,46 @@ class ImageManager:
         train_ratio = self._config.dataset_split.train
         val_ratio = self._config.dataset_split.val
 
-        filenames = [e.filename for e in self._images]
         rng = random.Random(seed)
-        rng.shuffle(filenames)
 
-        n = len(filenames)
-        n_train = round(n * train_ratio)
-        n_val = round(n * val_ratio)
+        # Stratified split: preserve occlusion level distribution across subsets.
+        # Group images by the occlusion level of their annotation folder so that
+        # rendah/sedang/tinggi images appear proportionally in each split.
+        groups: dict[str, list[str]] = {
+            "rendah": [], "sedang": [], "tinggi": [], "unknown": []
+        }
+        for e in self._images:
+            ann = Path(e.annotation_path)
+            if ann.parent.name in groups:
+                groups[ann.parent.name].append(e.filename)
+            else:
+                groups["unknown"].append(e.filename)
+
+        train_names: list[str] = []
+        val_names: list[str] = []
+        test_names: list[str] = []
+
+        for names in groups.values():
+            rng.shuffle(names)
+            n = len(names)
+            n_train = round(n * train_ratio)
+            n_val = round(n * val_ratio)
+            train_names.extend(names[:n_train])
+            val_names.extend(names[n_train:n_train + n_val])
+            test_names.extend(names[n_train + n_val:])
+
+        # Shuffle combined lists so order is random within each split
+        rng.shuffle(train_names)
+        rng.shuffle(val_names)
+        rng.shuffle(test_names)
 
         split_data = {
             "seed": seed,
             "created_at": date.today().isoformat(),
-            "train": filenames[:n_train],
-            "val": filenames[n_train:n_train + n_val],
-            "test": filenames[n_train + n_val:],
+            "stratified": True,
+            "train": train_names,
+            "val": val_names,
+            "test": test_names,
         }
 
         split_path.parent.mkdir(parents=True, exist_ok=True)

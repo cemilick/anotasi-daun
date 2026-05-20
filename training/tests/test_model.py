@@ -1,0 +1,114 @@
+"""Unit tests for training/model.py (tasks 2.3, 2.6, 2.9, 2.10, 2.11)."""
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+import torch
+import pytest
+
+from training.model import ASPPModule, BoundaryAttentionHead, PropDeOccNet
+
+
+def make_fake_images(n: int = 2, h: int = 64, w: int = 64) -> list[torch.Tensor]:
+    return [torch.rand(3, h, w) for _ in range(n)]
+
+
+def make_fake_targets(n: int = 2, h: int = 64, w: int = 64, num_instances: int = 2) -> list[dict]:
+    targets = []
+    for _ in range(n):
+        boxes = torch.tensor([[5, 5, 30, 30], [35, 35, 60, 60]], dtype=torch.float32)
+        labels = torch.ones(num_instances, dtype=torch.int64)
+        masks = torch.zeros(num_instances, h, w, dtype=torch.bool)
+        masks[0, 5:30, 5:30] = True
+        masks[1, 35:60, 35:60] = True
+        targets.append({
+            "boxes": boxes,
+            "labels": labels,
+            "masks": masks,
+        })
+    return targets
+
+
+# --- Task 2.3: ASPPModule shape ---
+
+def test_aspp_output_shape():
+    aspp = ASPPModule(in_channels=256, out_channels=256, atrous_rates=[6, 12, 18, 24])
+    x = torch.randn(2, 256, 14, 14)
+    out = aspp(x)
+    assert out.shape == (2, 256, 14, 14), f"Expected (2,256,14,14), got {out.shape}"
+
+
+def test_aspp_preserves_small_spatial():
+    aspp = ASPPModule(in_channels=128, out_channels=64, atrous_rates=[6, 12, 18, 24])
+    x = torch.randn(1, 128, 7, 7)
+    out = aspp(x)
+    assert out.shape == (1, 64, 7, 7)
+
+
+# --- Task 2.6: BoundaryAttentionHead shape and range ---
+
+def test_boundary_head_shape():
+    head = BoundaryAttentionHead(in_channels=256, hidden_channels=128)
+    x = torch.randn(2, 256, 14, 14)
+    out = head(x)
+    assert out.shape == (2, 1, 14, 14), f"Expected (2,1,14,14), got {out.shape}"
+
+
+def test_boundary_head_range():
+    head = BoundaryAttentionHead(in_channels=256, hidden_channels=128)
+    x = torch.randn(4, 256, 14, 14)
+    out = head(x)
+    assert out.min().item() >= 0.0
+    assert out.max().item() <= 1.0
+
+
+# --- Tasks 2.9, 2.10, 2.11: PropDeOccNet ---
+
+@pytest.fixture(scope="module")
+def small_model():
+    return PropDeOccNet(num_classes=2, backbone="resnet50", pretrained_backbone=False,
+                        aspp_rates=[6, 12, 18, 24], use_boundary_head=True)
+
+
+def test_training_forward_returns_loss_dict(small_model):
+    small_model.train()
+    images = make_fake_images()
+    targets = make_fake_targets()
+    loss_dict, _ = small_model(images, targets)
+    required_keys = {"loss_classifier", "loss_box_reg", "loss_mask", "loss_objectness", "loss_rpn_box_reg"}
+    assert required_keys.issubset(loss_dict.keys()), f"Missing keys: {required_keys - loss_dict.keys()}"
+
+
+def test_inference_forward_returns_detections(small_model):
+    small_model.eval()
+    images = make_fake_images()
+    with torch.no_grad():
+        _, detections = small_model(images)
+    assert len(detections) == len(images)
+    for det in detections:
+        assert "boxes" in det
+        assert "labels" in det
+        assert "scores" in det
+        assert "masks" in det
+
+
+def test_no_boundary_loss_when_disabled():
+    model = PropDeOccNet(num_classes=2, backbone="resnet50", pretrained_backbone=False,
+                         aspp_rates=[6, 12, 18, 24], use_boundary_head=False)
+    model.train()
+    images = make_fake_images()
+    targets = make_fake_targets()
+    loss_dict, _ = model(images, targets)
+    assert "loss_boundary" not in loss_dict
+
+
+def test_checkpoint_roundtrip(small_model):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "model.pth"
+        torch.save(small_model.state_dict(), path)
+        loaded = PropDeOccNet(num_classes=2, backbone="resnet50", pretrained_backbone=False,
+                              aspp_rates=[6, 12, 18, 24], use_boundary_head=True)
+        missing, unexpected = loaded.load_state_dict(torch.load(path, map_location="cpu"))
+        assert len(missing) == 0, f"Missing keys: {missing}"
+        assert len(unexpected) == 0, f"Unexpected keys: {unexpected}"

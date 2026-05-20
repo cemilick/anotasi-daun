@@ -37,6 +37,7 @@ from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -62,7 +63,7 @@ from PyQt5.QtWidgets import (
 from src.annotation_engine import AnnotationCanvas, CanvasMode
 from src.config import Config
 from src.exporter import Exporter
-from src.image_manager import ImageEntry, ImageManager, Polygon
+from src.image_manager import ImageEntry, ImageManager, OcclusionLevel, Polygon
 from src.visualizer import Visualizer
 
 try:
@@ -78,13 +79,15 @@ except ImportError:
 class _ThreadBridge(QObject):
     """Carries results from a plain Python thread back to the Qt main thread.
 
-    Created on the main thread; when .result or .error is emitted from a
-    background thread, Qt queues the signal and delivers it on the main thread's
-    event loop — no QTimer.singleShot needed.
+    Created on the main thread; when any signal is emitted from a background
+    thread, Qt queues the delivery to the main thread's event loop — safe for
+    all UI updates.
     """
 
-    result = pyqtSignal(list)  # list[Polygon]
+    result = pyqtSignal(list)      # list[Polygon]
     error = pyqtSignal(str)
+    progress = pyqtSignal(int, str)  # (current, label) — for progress dialogs
+    flash = pyqtSignal(str)          # status bar flash message
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +172,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._load_model_async)
 
         self._update_sam_controls()
+        self._update_occlusion_panel()
         self._update_status_bar()
 
     # ------------------------------------------------------------------ #
@@ -361,6 +365,47 @@ class MainWindow(QMainWindow):
         il.addWidget(self._overflow_lbl)
         layout.addWidget(inst_box)
 
+        # Occlusion classification panel
+        occ_box = QGroupBox("Oklusi Anotasi")
+        ol = QVBoxLayout(occ_box)
+        ol.setSpacing(4)
+        self._lbl_occ_folder = QLabel("Folder: —")
+        self._lbl_occ_folder.setStyleSheet("font-weight: bold; font-size: 11px;")
+        self._lbl_occ_poly = QLabel("— pilih polygon untuk koreksi —")
+        self._lbl_occ_poly.setWordWrap(True)
+        self._lbl_occ_poly.setStyleSheet("font-size: 10px; color: gray;")
+        occ_btn_row = QHBoxLayout()
+        self._btn_occ_r = QPushButton("Rendah")
+        self._btn_occ_s = QPushButton("Sedang")
+        self._btn_occ_t = QPushButton("Tinggi")
+        self._btn_occ_auto = QPushButton("Auto ↺")
+        self._btn_occ_r.setCheckable(True)
+        self._btn_occ_s.setCheckable(True)
+        self._btn_occ_t.setCheckable(True)
+        self._btn_occ_auto.setCheckable(True)
+        self._btn_occ_r.setStyleSheet(
+            "QPushButton:checked { background-color: #2e7d32; color: white; }"
+        )
+        self._btn_occ_s.setStyleSheet(
+            "QPushButton:checked { background-color: #bf360c; color: white; }"
+        )
+        self._btn_occ_t.setStyleSheet(
+            "QPushButton:checked { background-color: #b71c1c; color: white; }"
+        )
+        self._btn_occ_auto.setStyleSheet(
+            "QPushButton:checked { background-color: #1565c0; color: white; }"
+        )
+        self._occ_btn_group = QButtonGroup(occ_box)
+        self._occ_btn_group.setExclusive(True)
+        for btn in (self._btn_occ_r, self._btn_occ_s, self._btn_occ_t, self._btn_occ_auto):
+            btn.setEnabled(False)
+            self._occ_btn_group.addButton(btn)
+            occ_btn_row.addWidget(btn)
+        ol.addWidget(self._lbl_occ_folder)
+        ol.addWidget(self._lbl_occ_poly)
+        ol.addLayout(occ_btn_row)
+        layout.addWidget(occ_box)
+
         # Thumbnail
         thumb_box = QGroupBox("Preview")
         tl = QVBoxLayout(thumb_box)
@@ -388,6 +433,18 @@ class MainWindow(QMainWindow):
         self._btn_accept.clicked.connect(self.accept_all_auto)
         self._btn_reject.clicked.connect(self.reject_selected_auto)
         self._inst_list.itemClicked.connect(self._on_instance_clicked)
+
+        # Occlusion panel connections
+        self._btn_occ_r.clicked.connect(
+            lambda: self._set_selected_occlusion(OcclusionLevel.RENDAH)
+        )
+        self._btn_occ_s.clicked.connect(
+            lambda: self._set_selected_occlusion(OcclusionLevel.SEDANG)
+        )
+        self._btn_occ_t.clicked.connect(
+            lambda: self._set_selected_occlusion(OcclusionLevel.TINGGI)
+        )
+        self._btn_occ_auto.clicked.connect(lambda: self._set_selected_occlusion(None))
 
         return panel
 
@@ -561,10 +618,10 @@ class MainWindow(QMainWindow):
 
         bridge.result.connect(_on_result)
         bridge.error.connect(_on_error)
+        bridge.flash.connect(lambda msg: self._flash(msg, ms=60000))
 
         def _run() -> None:
             try:
-                # Call Roboflow batch script with environment variables
                 log.info(
                     "trigger_sam_auto_current: memanggil Roboflow untuk %s", image_path
                 )
@@ -588,46 +645,48 @@ class MainWindow(QMainWindow):
                     bridge.error.emit(f"Roboflow gagal: {error_msg}")
                     return
 
-                # Update status message
-                QTimer.singleShot(
-                    0, lambda: self._flash("Roboflow: Menerima hasil...", ms=60000)
-                )
+                bridge.flash.emit("Roboflow: Menerima hasil...")
 
                 # Poll for result file
                 start_time = time.time()
-                elapsed = 0
+                last_flash_t = 0.0
                 while not result_json_path.exists():
                     if time.time() - start_time > ROBOFLOW_TIMEOUT:
                         bridge.error.emit(
                             "Timeout menunggu hasil Roboflow (lebih dari 3 menit)"
                         )
                         return
+                    now = time.time()
+                    if now - last_flash_t >= 2.0:
+                        elapsed = int(now - start_time)
+                        bridge.flash.emit(f"Roboflow: Menunggu hasil... ({elapsed}s)")
+                        last_flash_t = now
                     time.sleep(POLL_INTERVAL)
-                    elapsed += POLL_INTERVAL
-                    # Update status every 2 seconds
-                    if int(elapsed) % 2 == 0:
-                        QTimer.singleShot(
-                            0,
-                            lambda e=elapsed: self._flash(
-                                f"Roboflow: Menunggu hasil... ({int(e)}s)", ms=60000
-                            ),
-                        )
 
-                # Read and convert result
-                QTimer.singleShot(
-                    0, lambda: self._flash("Roboflow: Memproses hasil...", ms=60000)
-                )
-                with open(result_json_path, encoding="utf-8") as f:
-                    roboflow_data = json.load(f)
+                bridge.flash.emit("Roboflow: Memproses hasil...")
+
+                # Retry up to 3× to handle race condition (file still writing)
+                roboflow_data = None
+                for attempt in range(3):
+                    try:
+                        with open(result_json_path, encoding="utf-8") as f:
+                            roboflow_data = json.load(f)
+                        break
+                    except json.JSONDecodeError as e:
+                        if attempt < 2:
+                            log.warning(
+                                "JSON parse retry %d for %s: %s",
+                                attempt + 1, self._current_entry.filename if self._current_entry else "?", e,
+                            )
+                            time.sleep(0.5)
+                        else:
+                            bridge.error.emit(f"JSON tidak valid setelah 3 percobaan: {e}")
+                            return
 
                 existing = self._canvas.get_polygons()
                 start_id = max((p.instance_id for p in existing), default=0) + 1
 
-                polygons = roboflow_to_polygons(
-                    roboflow_data, instance_id_start=start_id
-                )
-
-                # Filter by confidence
+                polygons = roboflow_to_polygons(roboflow_data, instance_id_start=start_id)
                 filtered = [p for p in polygons if p.confidence >= self._confidence]
                 log.info(
                     "trigger_sam_auto_current: %d polygon lolos filter, mengirim ke UI...",
@@ -695,22 +754,33 @@ class MainWindow(QMainWindow):
         stop_event = threading.Event()
         total_polygons = 0
 
-        def _on_result(polygons: list) -> None:
-            nonlocal total_polygons
-            total_polygons += len(polygons)
+        def _on_result(_polygons: list) -> None:
+            pass  # batch result arrives when all done; polygons already saved
 
         def _on_error(msg: str) -> None:
             progress_dlg.close()
             QMessageBox.warning(self, "Roboflow Batch Error", msg)
             bridge.deleteLater()
 
-        bridge.result.connect(_on_result)
+        def _on_progress(current: int, label: str) -> None:
+            progress_dlg.setValue(current)
+            progress_dlg.setLabelText(label)
+
+        def _on_flash(msg: str) -> None:
+            self._flash(msg, ms=60000)
+
+        def _on_finished(_polygons: list) -> None:
+            self._on_batch_finished(total_polygons, len(entries), progress_dlg)
+            bridge.deleteLater()
+
+        bridge.result.connect(_on_finished)
         bridge.error.connect(_on_error)
+        bridge.progress.connect(_on_progress)
+        bridge.flash.connect(_on_flash)
 
         def _run() -> None:
             nonlocal total_polygons
             try:
-                # Call Roboflow batch script with environment variables
                 batch_file = ROBOFLOW_ROOT / "run_batch.bat"
                 log.info(
                     "trigger_sam_auto_all: memanggil Roboflow batch untuk %d gambar",
@@ -733,13 +803,13 @@ class MainWindow(QMainWindow):
                     env=env,
                 )
 
-                # Wait for process to complete with timeout
                 timeout_per_image = ROBOFLOW_TIMEOUT
                 total_timeout = timeout_per_image * len(entries)
                 start_time = time.time()
 
-                # Poll for completion and results
                 completed = set()
+                last_flash_t = 0.0
+
                 while len(completed) < len(entries):
                     if stop_event.is_set():
                         process.terminate()
@@ -753,84 +823,98 @@ class MainWindow(QMainWindow):
                         )
                         return
 
-                    # Check if process has errored
                     if process.poll() is not None and process.returncode != 0:
                         stderr = process.stderr.read() if process.stderr else ""
                         bridge.error.emit(f"Roboflow batch gagal: {stderr}")
                         return
 
-                    # Check for completed results
-                    for idx, entry in enumerate(entries):
+                    # Flash status every 2 seconds (via signal — not QTimer)
+                    now = time.time()
+                    elapsed = now - start_time
+                    if now - last_flash_t >= 2.0:
+                        bridge.flash.emit(f"Roboflow: Menunggu hasil... ({int(elapsed)}s)")
+                        last_flash_t = now
+
+                    for entry in entries:
                         if entry.filepath in completed:
                             continue
 
                         result_json_path = (
                             ROBOFLOW_RESULTS_DIR / f"{Path(entry.filepath).stem}.json"
                         )
-                        if result_json_path.exists():
+                        if not result_json_path.exists():
+                            continue
+
+                        # Retry up to 3× to handle race condition (file still writing)
+                        roboflow_data = None
+                        for attempt in range(3):
                             try:
                                 with open(result_json_path, encoding="utf-8") as f:
                                     roboflow_data = json.load(f)
+                                break
+                            except json.JSONDecodeError as e:
+                                if attempt < 2:
+                                    log.warning(
+                                        "JSON parse retry %d for %s: %s",
+                                        attempt + 1, entry.filename, e,
+                                    )
+                                    time.sleep(0.5)
+                                else:
+                                    log.error(
+                                        "Error processing result for %s: %s",
+                                        entry.filename, e,
+                                    )
 
-                                existing = self._img_manager.load_annotation(entry)
-                                start_id = (
-                                    max((p.instance_id for p in existing), default=0)
-                                    + 1
-                                )
+                        if roboflow_data is None:
+                            continue
 
-                                polygons = roboflow_to_polygons(
-                                    roboflow_data, instance_id_start=start_id
-                                )
-                                filtered = [
-                                    p for p in polygons if p.confidence >= confidence
-                                ]
+                        try:
+                            existing = self._img_manager.load_annotation(entry)
+                            start_id = (
+                                max((p.instance_id for p in existing), default=0) + 1
+                            )
+                            polygons = roboflow_to_polygons(
+                                roboflow_data, instance_id_start=start_id
+                            )
+                            filtered = [
+                                p for p in polygons if p.confidence >= confidence
+                            ]
 
-                                # Compute occlusion levels for Roboflow polygons
-                                if filtered:
+                            all_to_save = existing + filtered
+                            if filtered:
+                                # Compute occlusion for ALL polygons together so that
+                                # overlap between existing and new leaves is captured.
+                                # Skip manually-overridden polygons.
+                                non_manual = [p for p in all_to_save if not p.occlusion_manual]
+                                if non_manual:
                                     from src.auto_labeler import compute_occlusion_levels
-                                    image_shape = (entry.height, entry.width)
-                                    compute_occlusion_levels(filtered, image_shape)
+                                    compute_occlusion_levels(
+                                        non_manual, (entry.height, entry.width)
+                                    )
 
-                                # Save annotation
-                                self._img_manager.save_annotation(
-                                    entry, existing + filtered
-                                )
-                                entry.auto_labeled = True
+                            self._img_manager.save_annotation(entry, all_to_save)
+                            entry.auto_labeled = True
+                            total_polygons += len(filtered)
 
-                                completed.add(entry.filepath)
-                                log.info(
-                                    "trigger_sam_auto_all: %s selesai, %d polygon",
-                                    entry.filename,
-                                    len(filtered),
-                                )
+                            completed.add(entry.filepath)
+                            log.info(
+                                "trigger_sam_auto_all: %s selesai, %d polygon",
+                                entry.filename, len(filtered),
+                            )
+                            # Update progress dialog via signal (thread-safe)
+                            bridge.progress.emit(
+                                len(completed), f"Selesai: {entry.filename}…"
+                            )
 
-                                # Update progress dialog (must be in main thread)
-                                progress_dlg.setValue(len(completed))
-                                progress_dlg.setLabelText(
-                                    f"Memproses {entry.filename}…"
-                                )
-
-                            except Exception as e:
-                                log.error(
-                                    "Error processing result for %s: %s",
-                                    entry.filename,
-                                    e,
-                                )
+                        except Exception as e:
+                            log.error(
+                                "Error saving result for %s: %s", entry.filename, e,
+                            )
 
                     time.sleep(POLL_INTERVAL)
 
-                # Wait for process to finish
                 process.wait()
-                bridge.result.emit([])
-                bridge.deleteLater()
-
-                # Final update in main thread
-                QTimer.singleShot(
-                    0,
-                    lambda: self._on_batch_finished(
-                        total_polygons, len(entries), progress_dlg
-                    ),
-                )
+                bridge.result.emit([])  # triggers _on_finished on main thread
 
             except Exception as exc:
                 log.error("trigger_sam_auto_all: error — %s", exc, exc_info=True)
@@ -928,6 +1012,7 @@ class MainWindow(QMainWindow):
         self._canvas.load_image(entry, polygons)
         self._update_instance_list(polygons)
         self._update_thumbnail()
+        self._update_occlusion_panel()
         self._update_stats()
         self._update_status_bar()
 
@@ -936,6 +1021,7 @@ class MainWindow(QMainWindow):
             self._current_entry.annotated = bool(polygons)
         self._update_instance_list(polygons)
         self._update_thumbnail()
+        self._update_occlusion_panel()
         self._update_status_bar()
 
     def _on_has_unsaved_changes(self, has_changes: bool) -> None:
@@ -1102,20 +1188,13 @@ class MainWindow(QMainWindow):
             all_polys = self._canvas._polygons + self._canvas._pending_polygons
             self._update_instance_list(all_polys)
 
-            # For Roboflow polygons, compute occlusion levels and auto-accept
+            # For Roboflow polygons, auto-accept so they are saved on navigation/save.
+            # Occlusion is already computed by inject_polygons → _trigger_occlusion_recompute;
+            # accept_all_auto() will recompute again after moving pending → confirmed.
             if source == "roboflow":
-                if self._current_entry:
-                    image_shape = (self._current_entry.height, self._current_entry.width)
-                    # Compute occlusion for Roboflow polygons
-                    from src.auto_labeler import compute_occlusion_levels
-                    # Only compute for polygons that don't have occlusion_level yet
-                    polygons_to_compute = [p for p in polygons if p.occlusion_level is None]
-                    if polygons_to_compute:
-                        compute_occlusion_levels(polygons_to_compute, image_shape)
-                        # Auto-accept Roboflow polygons since occlusion is computed
-                        self._canvas.accept_all_auto()
-                        self._update_instance_list(self._canvas.get_polygons())
-                        self._update_thumbnail()
+                self._canvas.accept_all_auto()
+                self._update_instance_list(self._canvas.get_polygons())
+                self._update_thumbnail()
                 self._flash(f"Roboflow: {len(polygons)} polygon ditemukan ✓")
             else:
                 # For SAM point prediction, auto-start refinement mode
@@ -1495,6 +1574,7 @@ class MainWindow(QMainWindow):
             if self._canvas._mode != CanvasMode.SELECT:
                 self._canvas._mode = CanvasMode.SELECT
             self._canvas.update()
+            self._update_occlusion_panel()
             self._update_status_bar()
 
     def _handle_escape(self) -> None:
@@ -1518,6 +1598,71 @@ class MainWindow(QMainWindow):
             self.finish_refinement()
         else:
             self.accept_all_auto()
+
+    def _update_occlusion_panel(self) -> None:
+        """Refresh the Oklusi Anotasi panel with current image folder and selected polygon."""
+        polygons = self._canvas.get_polygons()
+
+        # Image-level folder (highest occlusion wins)
+        levels = {p.occlusion_level for p in polygons if p.occlusion_level is not None}
+        if not polygons:
+            self._lbl_occ_folder.setText("Folder: —")
+            self._lbl_occ_folder.setStyleSheet("font-weight: bold; font-size: 11px;")
+        elif OcclusionLevel.TINGGI in levels:
+            self._lbl_occ_folder.setText("Folder: annotations/tinggi")
+            self._lbl_occ_folder.setStyleSheet(
+                "color: #b71c1c; font-weight: bold; font-size: 11px;"
+            )
+        elif OcclusionLevel.SEDANG in levels:
+            self._lbl_occ_folder.setText("Folder: annotations/sedang")
+            self._lbl_occ_folder.setStyleSheet(
+                "color: #bf360c; font-weight: bold; font-size: 11px;"
+            )
+        else:
+            self._lbl_occ_folder.setText("Folder: annotations/rendah")
+            self._lbl_occ_folder.setStyleSheet(
+                "color: #2e7d32; font-weight: bold; font-size: 11px;"
+            )
+
+        # Selected polygon info and button state
+        selected_id = self._canvas._selected_id
+        selected_poly = None
+        for p in self._canvas._polygons + self._canvas._pending_polygons:
+            if p.instance_id == selected_id:
+                selected_poly = p
+                break
+
+        if selected_poly is None:
+            self._lbl_occ_poly.setText("— pilih polygon untuk koreksi —")
+            self._lbl_occ_poly.setStyleSheet("font-size: 10px; color: gray;")
+            for btn in (self._btn_occ_r, self._btn_occ_s, self._btn_occ_t, self._btn_occ_auto):
+                btn.setEnabled(False)
+                btn.setChecked(False)
+        else:
+            level = selected_poly.occlusion_level
+            manual = selected_poly.occlusion_manual
+            pct = int((selected_poly.occlusion_ratio or 0.0) * 100)
+            level_name = level.value.capitalize() if level else "Belum dihitung"
+            lock_icon = " 🔒" if manual else ""
+            self._lbl_occ_poly.setText(
+                f"#{selected_poly.instance_id}: {level_name} ({pct}%){lock_icon}"
+            )
+            self._lbl_occ_poly.setStyleSheet("font-size: 10px;")
+
+            for btn in (self._btn_occ_r, self._btn_occ_s, self._btn_occ_t, self._btn_occ_auto):
+                btn.setEnabled(True)
+
+            # setChecked on checkable buttons in a QButtonGroup does not emit clicked
+            self._btn_occ_r.setChecked(level == OcclusionLevel.RENDAH and manual)
+            self._btn_occ_s.setChecked(level == OcclusionLevel.SEDANG and manual)
+            self._btn_occ_t.setChecked(level == OcclusionLevel.TINGGI and manual)
+            self._btn_occ_auto.setChecked(not manual)
+
+    def _set_selected_occlusion(self, level: OcclusionLevel | None) -> None:
+        """Button handler: override or reset occlusion for the selected polygon."""
+        self._canvas.set_selected_occlusion(level)
+        # _on_annotation_changed will update the panel via signal; also refresh thumbnail
+        self._update_thumbnail()
 
     def _flash(self, msg: str, ms: int = 2000) -> None:
         old = self._sb_file.text()
