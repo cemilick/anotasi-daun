@@ -1,0 +1,60 @@
+# Config Kaggle — dibuat otomatis oleh notebook (Step 3)
+# File ini akan di-overwrite saat notebook dijalankan.
+# Jangan edit manual; ubah variabel di cell konfigurasi notebook.
+
+# Data
+train_json:   /kaggle/input/daun-itoh-coco/train/_annotations.coco.json
+val_json:     /kaggle/input/daun-itoh-coco/valid/_annotations.coco.json
+test_json:    /kaggle/input/daun-itoh-coco/test/_annotations.coco.json
+images_dir:   null             # null = otomatis dari folder JSON (Roboflow style)
+num_classes:  3                # background + daun kelengkeng + daun kelengkeng itoh
+
+# Model
+backbone:     resnet101
+pretrained_backbone: true
+aspp_rates:   [6, 12, 18, 24]
+aspp_out_channels: 256
+trainable_backbone_layers: 3
+use_boundary_head: true
+
+# Training
+epochs:       50
+batch_size:   4                # T4 16GB → batch 4 aman; P100 16GB → bisa 6
+num_workers:  2                # Kaggle memberi 2 CPU core
+image_size:   512
+
+# Augmentasi
+mosaic_prob:  0.3
+
+# Normalisasi
+normalize_mean: [0.485, 0.456, 0.406]
+normalize_std:  [0.229, 0.224, 0.225]
+
+# Optimizer
+optimizer:    adam
+lr:           0.0001
+weight_decay: 0.0001
+
+# LR Schedule
+lr_scheduler: cosine
+lr_min:       0.000001
+
+# Combined Loss
+loss_weights:
+  focal:    1.0
+  dice:     1.0
+  boundary: 1.0
+
+# Checkpoint
+checkpoint_dir: /kaggle/working/checkpoints
+save_every:   5
+resume:       null
+
+# Logging
+tensorboard_dir: /kaggle/working/runs
+log_every:    20
+
+# Oklusi
+occlusion_thresholds: [0.15, 0.40]
+occlusion_filter: null
+occlusion_stats: true

@@ -38,7 +38,13 @@ except Exception as _tb_err:
 
 SummaryWriter = _RealWriter
 
-from training.dataset import DaunDataset, collate_fn, get_train_transforms, get_val_transforms
+from training.dataset import (
+    DaunDataset,
+    collate_fn,
+    compute_dataset_occlusion_stats,
+    get_train_transforms,
+    get_val_transforms,
+)
 from training.evaluate import evaluate
 from training.model import PropDeOccNet
 
@@ -200,9 +206,32 @@ def load_checkpoint(
     return ckpt["epoch"], ckpt.get("bf_score", 0.0)
 
 
+def _find_latest_checkpoint(checkpoint_dir: Path) -> Path | None:
+    """Return the highest-numbered epoch_XXX.pth in checkpoint_dir, or None."""
+    candidates = sorted(checkpoint_dir.glob("epoch_*.pth"))
+    return candidates[-1] if candidates else None
+
+
+def _sync_to_drive(src: Path, drive_dir: Path | None) -> None:
+    """Copy a checkpoint file to Google Drive. Silent no-op if drive_dir is absent."""
+    if drive_dir is None:
+        return
+    try:
+        import shutil
+        drive_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, drive_dir / src.name)
+        print(f"  >> Drive sync: {src.name}")
+    except Exception as exc:
+        print(f"  [WARNING] Drive sync failed for {src.name}: {exc}")
+
+
 # ── Training Entry Point ───────────────────────────────────────────────────────
 
-def train(config_path: str = "training/config_train.yaml", prefer_device: str | None = None) -> None:
+def train(
+    config_path: str = "training/config_train.yaml",
+    prefer_device: str | None = None,
+    drive_checkpoint_dir: str | None = None,
+) -> None:
     with open(config_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
@@ -215,18 +244,41 @@ def train(config_path: str = "training/config_train.yaml", prefer_device: str | 
         if cfg.get("num_workers", 4) > 0:
             print("Note: num_workers set to 0 (required for CPU/DirectML on Windows)")
 
+    occlusion_thresholds = tuple(cfg.get("occlusion_thresholds", [0.15, 0.40]))
+    occlusion_filter = cfg.get("occlusion_filter")
+
+    # ── Occlusion Statistics ──
+    _occ_stats_train: dict | None = None
+    if cfg.get("occlusion_stats", False):
+        for split, json_key in [("train", "train_json"), ("val", "val_json")]:
+            json_path = cfg.get(json_key)
+            if json_path:
+                print(f"\nOklusi [{split}]:")
+                stats = compute_dataset_occlusion_stats(
+                    json_path,
+                    thresholds=occlusion_thresholds,
+                    verbose=True,
+                )
+                if json_key == "train_json":
+                    _occ_stats_train = stats
+        print()
+
     # ── Datasets & DataLoaders ──
     train_ds = DaunDataset(
         coco_json_path=cfg.get("train_json"),
         images_dir=cfg.get("images_dir"),
         transforms=get_train_transforms(cfg.get("image_size", 512)),
         mosaic_prob=cfg.get("mosaic_prob", 0.0),
+        occlusion_filter=occlusion_filter,
+        occlusion_thresholds=occlusion_thresholds,
     )
     val_ds = DaunDataset(
         coco_json_path=cfg.get("val_json"),
         images_dir=cfg.get("images_dir"),
         transforms=get_val_transforms(cfg.get("image_size", 512)),
         mosaic_prob=0.0,
+        occlusion_filter=occlusion_filter,
+        occlusion_thresholds=occlusion_thresholds,
     )
     train_loader = DataLoader(
         train_ds,
@@ -275,21 +327,63 @@ def train(config_path: str = "training/config_train.yaml", prefer_device: str | 
     checkpoint_dir = Path(cfg.get("checkpoint_dir", "checkpoints"))
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    # Drive sync dir: prefer explicit arg, then config, then auto-detect Colab path.
+    _drive_dir: Path | None = None
+    _drive_str = drive_checkpoint_dir or cfg.get("drive_checkpoint_dir")
+    if _drive_str:
+        _drive_dir = Path(_drive_str)
+    else:
+        _colab_default = Path("/content/drive/MyDrive/labeling-daun-itoh/checkpoints")
+        if _colab_default.parent.exists():
+            _drive_dir = _colab_default
+    if _drive_dir:
+        print(f"Drive sync enabled → {_drive_dir}")
+
     tb_writer = SummaryWriter(log_dir=cfg.get("tensorboard_dir", "runs"))
 
+    # Log occlusion distribution to TensorBoard (one-time scalars at step 0)
+    if _occ_stats_train is None and cfg.get("occlusion_stats", False):
+        _occ_stats_train = compute_dataset_occlusion_stats(
+            cfg.get("train_json"), thresholds=occlusion_thresholds, verbose=False
+        )
+    if _occ_stats_train is not None:
+        total_imgs = max(_occ_stats_train["total"], 1)
+        for level in ("rendah", "sedang", "tinggi"):
+            tb_writer.add_scalar(
+                f"dataset/occlusion_{level}_pct",
+                _occ_stats_train[level] / total_imgs * 100,
+                0,
+            )
+
     # ── Resume ──
+    # Priority: explicit `resume` in config → auto-detect latest epoch_XXX.pth
     start_epoch = 0
     best_bf_score = 0.0
-    resume_path = cfg.get("resume")
-    if resume_path and Path(resume_path).exists():
-        start_epoch, best_bf_score = load_checkpoint(
-            Path(resume_path), model, optimizer, scheduler, device_label
-        )
-        start_epoch += 1
-        print(f"Resumed from {resume_path}, starting at epoch {start_epoch}")
+
+    _resume_path: Path | None = None
+    _resume_cfg = cfg.get("resume")
+    if _resume_cfg and Path(_resume_cfg).exists():
+        _resume_path = Path(_resume_cfg)
+        print(f"Resume path from config: {_resume_path}")
+    else:
+        _resume_path = _find_latest_checkpoint(checkpoint_dir)
+        if _resume_path:
+            print(f"Auto-detected checkpoint: {_resume_path}")
+
+    if _resume_path and _resume_path.exists():
+        start_epoch, _ = load_checkpoint(_resume_path, model, optimizer, scheduler, device_label)
+        start_epoch += 1  # next epoch to run
+        # Recover best score from best.pth (may differ from the resumed epoch).
+        _best_path = checkpoint_dir / "best.pth"
+        if _best_path.exists():
+            _best_ckpt = torch.load(_best_path, map_location="cpu")
+            best_bf_score = _best_ckpt.get("bf_score", 0.0)
+        print(f"Resuming from epoch {start_epoch} | best BF Score so far: {best_bf_score:.4f}")
+    else:
+        print("No checkpoint found — training from scratch")
 
     # ── Training Loop ──
-    global_step = 0
+    global_step = start_epoch * len(train_loader)
     for epoch in range(start_epoch, epochs):
         model.train()
         epoch_losses: dict[str, float] = {}
@@ -352,10 +446,13 @@ def train(config_path: str = "training/config_train.yaml", prefer_device: str | 
         if (epoch + 1) % save_every == 0:
             ckpt_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pth"
             save_checkpoint(model, optimizer, scheduler, epoch, bf_score, ckpt_path)
+            _sync_to_drive(ckpt_path, _drive_dir)
 
         if bf_score > best_bf_score:
             best_bf_score = bf_score
-            save_checkpoint(model, optimizer, scheduler, epoch, bf_score, checkpoint_dir / "best.pth")
+            _best_save = checkpoint_dir / "best.pth"
+            save_checkpoint(model, optimizer, scheduler, epoch, bf_score, _best_save)
+            _sync_to_drive(_best_save, _drive_dir)
             print(f"  >> New best BF Score: {best_bf_score:.4f}")
 
     tb_writer.close()
@@ -369,5 +466,7 @@ if __name__ == "__main__":
                         help="Path to YAML config (default: training/config_train.yaml)")
     parser.add_argument("--device", choices=["cuda", "directml", "cpu"], default=None,
                         help="Force device (auto-detect if omitted)")
+    parser.add_argument("--drive-checkpoint-dir", default=None,
+                        help="Google Drive path to sync checkpoints (auto-detected on Colab)")
     args = parser.parse_args()
-    train(args.config, prefer_device=args.device)
+    train(args.config, prefer_device=args.device, drive_checkpoint_dir=args.drive_checkpoint_dir)

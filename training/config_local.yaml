@@ -2,12 +2,12 @@
 # Lebih ringan dari config_train.yaml: ResNet-50, image kecil, epoch sedikit
 # Gunakan: python -m training.train training/config_local.yaml
 
-# Data
-train_json:   output/coco/train.json
-val_json:     output/coco/val.json
-test_json:    output/coco/test.json
-images_dir:   "C:/Users/user/Downloads/daun itoh"
-num_classes:  2
+# Data — Roboflow COCO v2
+train_json:   "C:/Users/user/Downloads/annotation-v1-roboflow.v2i.coco/train/_annotations.coco.json"
+val_json:     "C:/Users/user/Downloads/annotation-v1-roboflow.v2i.coco/valid/_annotations.coco.json"
+test_json:    "C:/Users/user/Downloads/annotation-v1-roboflow.v2i.coco/test/_annotations.coco.json"
+images_dir:   null             # null = otomatis dari folder JSON (Roboflow style)
+num_classes:  3                # background + daun kelengkeng + daun kelengkeng itoh
 
 # Device — dihapus = auto-detect (CUDA → DirectML → CPU)
 # device: cpu       # force CPU
@@ -57,3 +57,8 @@ resume:       null
 # Logging
 tensorboard_dir: runs/local/
 log_every:    5                # log lebih sering (batch kecil)
+
+# Oklusi
+occlusion_thresholds: [0.15, 0.40]
+occlusion_filter: null
+occlusion_stats: true
