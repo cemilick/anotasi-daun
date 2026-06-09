@@ -19,8 +19,8 @@ use_boundary_head: true
 
 # Training
 epochs:       50
-batch_size:   4                # T4 16GB → batch 4 aman; P100 16GB → bisa 6
-num_workers:  2                # Kaggle memberi 2 CPU core
+batch_size:   4                # T4 16GB → 4 | P100 16GB → 6 (bandwidth lebih tinggi)
+num_workers:  2                # Kaggle P100 memberi 2 CPU core
 image_size:   512
 
 # Augmentasi

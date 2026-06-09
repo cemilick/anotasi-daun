@@ -337,7 +337,7 @@ def train(
         eta_min=cfg.get("lr_min", 1e-6),
     )
 
-    scaler = torch.cuda.amp.GradScaler(enabled=(device_label == "cuda"))
+    scaler = torch.amp.GradScaler("cuda", enabled=(device_label == "cuda"))
     loss_weights = cfg.get("loss_weights", {"focal": 1.0, "dice": 1.0, "boundary": 1.0})
     save_every = cfg.get("save_every", 5)
     log_every = cfg.get("log_every", 20)
@@ -413,7 +413,7 @@ def train(
 
             optimizer.zero_grad()
             try:
-                with torch.cuda.amp.autocast(enabled=(device_label == "cuda")):
+                with torch.amp.autocast("cuda", enabled=(device_label == "cuda")):
                     loss_dict, _ = model(images, targets)
                     standard_loss = sum(
                         v for k, v in loss_dict.items()
