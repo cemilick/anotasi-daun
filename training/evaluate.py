@@ -95,29 +95,34 @@ def evaluate(
     was_training = model.training
     model.eval()
 
-    coco_gt_data = _build_coco_gt(data_loader)
-    coco_gt = _load_coco_from_dict(coco_gt_data)
+    if device == "cuda":
+        torch.cuda.empty_cache()
 
     coco_dt_list = []
-    all_pred_masks: list[np.ndarray] = []
-    all_gt_masks: list[np.ndarray] = []
-    iou_scores: list[float] = []
+    bf_scores_per_image: list[float] = []
+    iou_scores_per_image: list[float] = []
+    gt_batches: list[list[dict]] = []
 
     with torch.no_grad():
         for images, targets in data_loader:
+            gt_batches.append(targets)
             images = [img.to(device) for img in images]
             _, detections = model(images)
 
             for det, target in zip(detections, targets):
                 image_id = int(target["image_id"][0].item())
-                gt_masks_np = target["masks"].numpy()  # (N, H, W)
+                gt_masks_np = target["masks"].numpy()  # (N_gt, H, W)
 
                 boxes = det["boxes"].cpu().numpy()
                 scores = det["scores"].cpu().numpy()
                 labels = det["labels"].cpu().numpy()
-                masks = det["masks"].cpu().squeeze(1).numpy()  # (N, H, W)
+                masks = det["masks"].cpu().squeeze(1).numpy()  # (N_pred, H, W)
 
-                for i, (box, score, label, mask) in enumerate(zip(boxes, scores, labels, masks)):
+                img_pred_masks: list[np.ndarray] = []
+                img_gt_masks: list[np.ndarray] = []
+                img_ious: list[float] = []
+
+                for box, score, label, mask in zip(boxes, scores, labels, masks):
                     mask_bin = (mask > 0.5).astype(np.uint8)
 
                     # RLE encode for pycocotools
@@ -134,21 +139,33 @@ def evaluate(
                         "score": float(score),
                     })
 
-                    # BF Score and IoU per instance (match to nearest GT)
-                    for gt_mask in gt_masks_np:
-                        all_pred_masks.append(mask_bin.astype(bool))
-                        all_gt_masks.append(gt_mask.astype(bool))
-                        iou_scores.append(_compute_iou(mask_bin.astype(bool), gt_mask.astype(bool)))
+                    if len(gt_masks_np) > 0:
+                        ious = [_compute_iou(mask_bin.astype(bool), gt.astype(bool)) for gt in gt_masks_np]
+                        best_gt = gt_masks_np[int(np.argmax(ious))]
+                        img_pred_masks.append(mask_bin.astype(bool))
+                        img_gt_masks.append(best_gt.astype(bool))
+                        img_ious.append(max(ious))
+
+                # BF score dihitung per gambar — tidak ada akumulasi mask global
+                if img_pred_masks:
+                    bf_scores_per_image.append(compute_bf_score(img_pred_masks, img_gt_masks))
+                    iou_scores_per_image.append(float(np.mean(img_ious)))
+
+    # Build COCO GT from cached batches (no second DataLoader pass)
+    coco_gt_data = _build_coco_gt_from_batches(gt_batches)
+    coco_gt = _load_coco_from_dict(coco_gt_data)
 
     # mAP via pycocotools
     map_results = _run_coco_eval(coco_gt, coco_dt_list, iou_type)
 
-    # BF Score
-    bf_score = compute_bf_score(all_pred_masks, all_gt_masks)
+    bf_score = float(np.mean(bf_scores_per_image)) if bf_scores_per_image else 0.0
 
     # Restore training mode
     if was_training:
         model.train()
+
+    if device == "cuda":
+        torch.cuda.empty_cache()
 
     return {
         "mAP": map_results.get("mAP", 0.0),
@@ -159,19 +176,19 @@ def evaluate(
         "mAP_large": map_results.get("mAP_large", 0.0),
         "mAR_100": map_results.get("mAR_100", 0.0),
         "bf_score": bf_score,
-        "iou_mean": float(np.mean(iou_scores)) if iou_scores else 0.0,
+        "iou_mean": float(np.mean(iou_scores_per_image)) if iou_scores_per_image else 0.0,
     }
 
 
-def _build_coco_gt(data_loader: DataLoader) -> dict:
-    """Build COCO-format ground truth dict from DataLoader."""
+def _build_coco_gt_from_batches(gt_batches: list[list[dict]]) -> dict:
+    """Build COCO-format ground truth dict from cached batches (no second DataLoader pass)."""
     images = []
     annotations = []
     ann_id = 1
 
     from pycocotools import mask as coco_mask_util
 
-    for _, targets in data_loader:
+    for targets in gt_batches:
         for target in targets:
             image_id = int(target["image_id"][0].item())
             masks = target["masks"].numpy()

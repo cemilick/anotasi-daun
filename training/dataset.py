@@ -16,24 +16,60 @@ from pycocotools import mask as coco_mask
 
 
 # ── Occlusion Utilities ────────────────────────────────────────────────────────
+#
+# Pendekatan: bbox overlap ratio (bukan mask overlap).
+#
+# Roboflow menganotasi hanya bagian *terlihat* dari setiap daun, sehingga mask
+# tidak pernah tumpang tindih → mask-overlap selalu ≈ 0.
+# Sebaliknya, bounding box mencakup seluruh extent daun (termasuk bagian
+# tersembunyi), sehingga bbox dua daun yang saling menghalangi AKAN overlap.
+#
+# Rumus per-gambar:
+#   occlusion_ratio = (Σ luas_bbox − luas_piksel_unik) / Σ luas_bbox
+#
+# Threshold default: None → auto persentil ke-33 & ke-67 dari distribusi
+# training → distribusi ~seimbang antara rendah/sedang/tinggi.
 
-_DEFAULT_OCCLUSION_THRESHOLDS = (0.15, 0.40)  # (low_limit, high_limit)
 
+def _compute_image_occlusion_bbox(anns: list[dict], img_h: int, img_w: int) -> float:
+    """
+    Hitung rasio oklusi gambar dari overlap bounding box.
 
-def _compute_annotation_occlusion(mask_i: np.ndarray, all_masks: list[np.ndarray]) -> float:
-    """Compute fraction of mask_i that is covered by any other mask in all_masks."""
-    area_i = int(mask_i.sum())
-    if area_i == 0 or len(all_masks) <= 1:
+    Rasterisasi semua bbox ke grid berukuran ≤512 px, lalu:
+      ratio = (Σ luas_bbox − piksel_unik) / Σ luas_bbox
+
+    Nilai 0 berarti tidak ada overlap bbox sama sekali.
+    Nilai 1 berarti seluruh area bbox saling tumpang tindih (sangat padat).
+    """
+    if not anns:
         return 0.0
-    other_union = np.zeros(mask_i.shape, dtype=bool)
-    for m in all_masks:
-        if m is not mask_i:
-            other_union |= m
-    overlap = int((mask_i & other_union).sum())
-    return overlap / area_i
+
+    scale = min(1.0, 512.0 / max(img_h, img_w, 1))
+    gh = max(1, int(img_h * scale))
+    gw = max(1, int(img_w * scale))
+
+    coverage = np.zeros((gh, gw), dtype=np.int16)
+    total_bbox_area = 0
+
+    for ann in anns:
+        bx, by, bw, bh = ann["bbox"]
+        x1 = max(0, int(bx * scale))
+        y1 = max(0, int(by * scale))
+        x2 = min(gw, int((bx + bw) * scale) + 1)
+        y2 = min(gh, int((by + bh) * scale) + 1)
+        if x2 > x1 and y2 > y1:
+            coverage[y1:y2, x1:x2] += 1
+            total_bbox_area += (x2 - x1) * (y2 - y1)
+
+    if total_bbox_area == 0:
+        return 0.0
+
+    unique_area = int(np.sum(coverage >= 1))
+    overlap_area = total_bbox_area - unique_area
+    return max(0.0, float(overlap_area) / total_bbox_area)
 
 
-def _classify_occlusion(ratio: float, thresholds: tuple[float, float] = _DEFAULT_OCCLUSION_THRESHOLDS) -> str:
+def _classify_occlusion(ratio: float, thresholds: tuple[float, float]) -> str:
     low_thresh, high_thresh = thresholds
     if ratio < low_thresh:
         return "rendah"
@@ -44,71 +80,93 @@ def _classify_occlusion(ratio: float, thresholds: tuple[float, float] = _DEFAULT
 
 def compute_dataset_occlusion_stats(
     coco_json_path: str,
-    thresholds: tuple[float, float] = _DEFAULT_OCCLUSION_THRESHOLDS,
+    thresholds: tuple[float, float] | None = None,
     verbose: bool = True,
 ) -> dict:
     """
-    Compute per-image occlusion statistics for a COCO-format dataset.
+    Hitung statistik oklusi per-gambar untuk dataset COCO.
 
-    Occlusion is estimated from mask overlap — the fraction of each leaf mask that
-    is covered by other leaf masks in the same image.  The image-level occlusion
-    ratio is the mean of all per-annotation ratios in that image.
+    Metode: bbox overlap ratio (lihat _compute_image_occlusion_bbox).
+    Tidak memerlukan decoding mask → jauh lebih cepat dari metode mask.
+
+    Parameters
+    ----------
+    thresholds : (low, high) atau None
+        Jika None, threshold dihitung otomatis dari persentil ke-33 dan ke-67
+        distribusi rasio oklusi dataset ini → distribusi ~seimbang.
 
     Returns
     -------
-    dict with keys:
-        rendah  : int   – number of images classified as low-occlusion
-        sedang  : int   – medium-occlusion image count
-        tinggi  : int   – high-occlusion image count
-        total   : int   – total images processed
-        per_image : dict[image_id → {"level": str, "ratio": float}]
-    Thresholds : rendah < low_thresh <= sedang < high_thresh <= tinggi
+    dict berisi:
+        rendah, sedang, tinggi : int  — jumlah gambar per level
+        total      : int
+        thresholds : (float, float)  — threshold yang dipakai (auto atau fixed)
+        per_image  : dict[image_id → {"level": str, "ratio": float}]
     """
     coco = COCO(coco_json_path)
+    image_ids = sorted(coco.imgs.keys())
+
+    if verbose:
+        print(f"  Menghitung oklusi {len(image_ids)} gambar (bbox overlap) …", flush=True)
+
+    # ── Hitung rasio per gambar ────────────────────────────────────────────────
+    ratios: dict[int, float] = {}
+    for image_id in image_ids:
+        img_info = coco.imgs[image_id]
+        anns = coco.loadAnns(coco.getAnnIds(imgIds=image_id))
+        ratios[image_id] = _compute_image_occlusion_bbox(
+            anns, img_info["height"], img_info["width"]
+        )
+
+    # ── Tentukan threshold ─────────────────────────────────────────────────────
+    vals = np.array(list(ratios.values()), dtype=np.float64)
+    if thresholds is None:
+        p33 = float(np.percentile(vals, 33))
+        p67 = float(np.percentile(vals, 67))
+        # Hindari threshold degenerate (semua nilai sama)
+        if p33 >= p67:
+            p33 = float(np.percentile(vals, 25))
+            p67 = float(np.percentile(vals, 75))
+        if p33 >= p67:
+            med = float(np.median(vals))
+            p33 = max(0.0, med * 0.667)
+            p67 = med * 1.333
+        thresholds = (p33, p67)
+
+    # ── Klasifikasi ────────────────────────────────────────────────────────────
     counts: dict[str, int] = {"rendah": 0, "sedang": 0, "tinggi": 0}
     per_image: dict[int, dict] = {}
-
-    image_ids = sorted(coco.imgs.keys())
-    if verbose:
-        print(f"  Computing occlusion stats for {len(image_ids)} images …", flush=True)
-
-    for image_id in image_ids:
-        ann_ids = coco.getAnnIds(imgIds=image_id)
-        anns = coco.loadAnns(ann_ids)
-
-        if not anns:
-            counts["rendah"] += 1
-            per_image[image_id] = {"level": "rendah", "ratio": 0.0}
-            continue
-
-        # Decode all binary masks for this image
-        masks: list[np.ndarray] = []
-        for ann in anns:
-            rle = coco.annToRLE(ann)
-            masks.append(coco_mask.decode(rle).astype(bool))
-
-        ratios = [_compute_annotation_occlusion(m, masks) for m in masks]
-        img_ratio = float(np.mean(ratios))
-        level = _classify_occlusion(img_ratio, thresholds)
+    for image_id, ratio in ratios.items():
+        level = _classify_occlusion(ratio, thresholds)
         counts[level] += 1
-        per_image[image_id] = {"level": level, "ratio": img_ratio}
+        per_image[image_id] = {"level": level, "ratio": ratio}
 
     total = len(image_ids)
     counts["total"] = total
+    counts["thresholds"] = thresholds
+    counts["per_image"] = per_image
 
     if verbose and total > 0:
         low_t, high_t = thresholds
-        print(f"  Occlusion thresholds: rendah < {low_t:.0%} ≤ sedang < {high_t:.0%} ≤ tinggi")
+        print(f"  Metode       : bbox overlap ratio")
+        print(f"  Threshold    : rendah < {low_t:.4f} ≤ sedang < {high_t:.4f} ≤ tinggi")
+        print(f"  (auto dari persentil ke-33={low_t:.4f}, ke-67={high_t:.4f})")
         for level, label in [
-            ("rendah", f"rendah (< {low_t:.0%})"),
-            ("sedang", f"sedang ({low_t:.0%}–{high_t:.0%})"),
-            ("tinggi", f"tinggi (≥ {high_t:.0%})"),
+            ("rendah", f"rendah (< {low_t:.4f})"),
+            ("sedang", f"sedang ({low_t:.4f}–{high_t:.4f})"),
+            ("tinggi", f"tinggi (≥ {high_t:.4f})"),
         ]:
             n = counts[level]
-            print(f"    {label}: {n} images ({n / total:.1%})")
-        print(f"    total: {total} images")
+            print(f"    {label}: {n} gambar ({n / total:.1%})")
+        print(f"    total: {total} gambar")
+        # Mini histogram distribusi rasio
+        print(f"  Distribusi rasio: "
+              f"min={vals.min():.4f}  "
+              f"p25={np.percentile(vals,25):.4f}  "
+              f"median={np.median(vals):.4f}  "
+              f"p75={np.percentile(vals,75):.4f}  "
+              f"max={vals.max():.4f}")
 
-    counts["per_image"] = per_image
     return counts
 
 
@@ -116,22 +174,19 @@ def compute_dataset_occlusion_stats(
 
 class DaunDataset(Dataset):
     """
-    COCO-format dataset loader for daun kelengkeng itoh instance segmentation.
+    COCO-format dataset loader untuk instance segmentasi daun kelengkeng itoh.
 
     images_dir
-        Path to directory containing image files.  When ``None`` (default for
-        Roboflow-style datasets), images are assumed to be in the same folder
-        as the COCO JSON file.
+        Path ke folder gambar. Jika ``None``, gambar diasumsikan berada di
+        folder yang sama dengan file JSON (Roboflow style).
 
     occlusion_filter
-        When set to ``"rendah"``, ``"sedang"``, or ``"tinggi"``, only images
-        whose computed occlusion level matches are included in the dataset.
-        Occlusion is computed from mask overlap during ``__init__``.
+        ``"rendah"``, ``"sedang"``, atau ``"tinggi"`` untuk memfilter gambar
+        berdasarkan level oklusi. Oklusi dihitung dari bbox overlap saat init.
 
     occlusion_thresholds
-        Two-element tuple ``(low_thresh, high_thresh)`` used to classify the
-        mean per-annotation occlusion ratio of an image.
-        Default: ``(0.15, 0.40)``.
+        ``(low, high)`` untuk klasifikasi.  ``None`` → auto dari persentil ke-33
+        & ke-67 distribusi dataset ini.
     """
 
     def __init__(
@@ -141,14 +196,12 @@ class DaunDataset(Dataset):
         transforms: Callable | None = None,
         mosaic_prob: float = 0.0,
         occlusion_filter: str | None = None,
-        occlusion_thresholds: tuple[float, float] = _DEFAULT_OCCLUSION_THRESHOLDS,
+        occlusion_thresholds: tuple[float, float] | None = None,
     ) -> None:
         self.coco = COCO(coco_json_path)
-        # Auto-detect images_dir from JSON parent (Roboflow style: images co-located with JSON)
         self.images_dir = Path(images_dir) if images_dir else Path(coco_json_path).parent
         self.transforms = transforms
         self.mosaic_prob = mosaic_prob
-        self.occlusion_thresholds = occlusion_thresholds
         self._occlusion_cache: dict[int, dict] | None = None
 
         all_ids = sorted(self.coco.imgs.keys())
@@ -156,17 +209,22 @@ class DaunDataset(Dataset):
         if occlusion_filter is not None:
             valid_levels = {"rendah", "sedang", "tinggi"}
             if occlusion_filter not in valid_levels:
-                raise ValueError(f"occlusion_filter must be one of {valid_levels}, got '{occlusion_filter}'")
+                raise ValueError(f"occlusion_filter harus salah satu dari {valid_levels}")
             stats = compute_dataset_occlusion_stats(
                 coco_json_path, thresholds=occlusion_thresholds, verbose=False
             )
             self._occlusion_cache = stats["per_image"]
-            self.ids = [i for i in all_ids if self._occlusion_cache.get(i, {}).get("level") == occlusion_filter]
+            self.occlusion_thresholds = stats["thresholds"]
+            self.ids = [
+                i for i in all_ids
+                if self._occlusion_cache.get(i, {}).get("level") == occlusion_filter
+            ]
             print(
                 f"  occlusion_filter='{occlusion_filter}': "
-                f"{len(self.ids)}/{len(all_ids)} images retained"
+                f"{len(self.ids)}/{len(all_ids)} gambar dipakai"
             )
         else:
+            self.occlusion_thresholds = occlusion_thresholds
             self.ids = all_ids
 
     def __len__(self) -> int:
@@ -189,15 +247,11 @@ class DaunDataset(Dataset):
         ann_ids = self.coco.getAnnIds(imgIds=image_id)
         anns = self.coco.loadAnns(ann_ids)
 
-        masks = []
-        boxes = []
-        labels = []
-        areas = []
-        iscrowd = []
+        masks, boxes, labels, areas, iscrowd = [], [], [], [], []
 
         for ann in anns:
             rle = self.coco.annToRLE(ann)
-            mask = coco_mask.decode(rle).astype(bool)  # (H, W)
+            mask = coco_mask.decode(rle).astype(bool)
             masks.append(mask)
 
             pos = np.where(mask)
@@ -222,29 +276,30 @@ class DaunDataset(Dataset):
                 self.transforms, image, boxes_arr, masks_arr
             )
         elif self.transforms is not None:
-            image, _, _ = _apply_transforms(self.transforms, image, boxes_arr, np.zeros((0, h, w), dtype=bool))
+            image, _, _ = _apply_transforms(
+                self.transforms, image, boxes_arr, np.zeros((0, h, w), dtype=bool)
+            )
 
         image_tensor = _to_tensor(image)
 
-        # Compute image-level occlusion level (from cache if available, else on-the-fly)
+        # Oklusi dari cache (filter mode) atau hitung on-the-fly via bbox
         if self._occlusion_cache is not None and image_id in self._occlusion_cache:
-            occlusion_level = self._occlusion_cache[image_id]["level"]
             occlusion_ratio = self._occlusion_cache[image_id]["ratio"]
-        else:
-            if len(masks) > 1:
-                ratios = [_compute_annotation_occlusion(m, masks) for m in masks]
-                occlusion_ratio = float(np.mean(ratios))
-            else:
-                occlusion_ratio = 0.0
+            occlusion_level = self._occlusion_cache[image_id]["level"]
+        elif anns and self.occlusion_thresholds is not None:
+            occlusion_ratio = _compute_image_occlusion_bbox(anns, h, w)
             occlusion_level = _classify_occlusion(occlusion_ratio, self.occlusion_thresholds)
+        else:
+            occlusion_ratio = _compute_image_occlusion_bbox(anns, h, w)
+            occlusion_level = "unknown"
 
         target = {
-            "boxes": torch.as_tensor(boxes_arr, dtype=torch.float32),
-            "labels": torch.as_tensor(labels, dtype=torch.int64),
-            "masks": torch.as_tensor(masks_arr, dtype=torch.bool),
+            "boxes":    torch.as_tensor(boxes_arr, dtype=torch.float32),
+            "labels":   torch.as_tensor(labels, dtype=torch.int64),
+            "masks":    torch.as_tensor(masks_arr, dtype=torch.bool),
             "image_id": torch.tensor([image_id], dtype=torch.int64),
-            "area": torch.as_tensor(areas, dtype=torch.float32),
-            "iscrowd": torch.as_tensor(iscrowd, dtype=torch.int64),
+            "area":     torch.as_tensor(areas, dtype=torch.float32),
+            "iscrowd":  torch.as_tensor(iscrowd, dtype=torch.int64),
             "occlusion_level": occlusion_level,
             "occlusion_ratio": torch.tensor(occlusion_ratio, dtype=torch.float32),
         }
@@ -257,21 +312,28 @@ def _apply_transforms(
     boxes: np.ndarray,
     masks: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Apply albumentations transforms to image + boxes + masks together."""
     masks_u8 = [masks[i].astype(np.uint8) for i in range(len(masks))]
 
     if len(boxes) == 0:
         result = transforms(image=image, bboxes=[], labels=[], masks=masks_u8)
-        out_masks = np.stack([m.astype(bool) for m in result["masks"]], axis=0) if result["masks"] else masks
+        out_masks = (
+            np.stack([m.astype(bool) for m in result["masks"]], axis=0)
+            if result["masks"] else masks
+        )
         return result["image"], boxes, out_masks
 
-    bbox_list = boxes.tolist()
-    labels_list = list(range(len(boxes)))
-
-    result = transforms(image=image, bboxes=bbox_list, labels=labels_list, masks=masks_u8)
-
+    result = transforms(
+        image=image,
+        bboxes=boxes.tolist(),
+        labels=list(range(len(boxes))),
+        masks=masks_u8,
+    )
     out_image = result["image"]
-    out_boxes = np.array(result["bboxes"], dtype=np.float32) if result["bboxes"] else np.zeros((0, 4), dtype=np.float32)
+    out_boxes = (
+        np.array(result["bboxes"], dtype=np.float32)
+        if result["bboxes"]
+        else np.zeros((0, 4), dtype=np.float32)
+    )
     out_masks = (
         np.stack([m.astype(bool) for m in result["masks"]], axis=0)
         if result["masks"]
@@ -281,12 +343,11 @@ def _apply_transforms(
 
 
 def _to_tensor(image: np.ndarray) -> torch.Tensor:
-    """Convert HWC numpy array to CHW float tensor. Handles already-normalized arrays."""
     if image.dtype == np.uint8:
         image = image.astype(np.float32) / 255.0
     t = torch.from_numpy(image)
     if t.ndim == 3:
-        t = t.permute(2, 0, 1)  # HWC → CHW
+        t = t.permute(2, 0, 1)
     return t.float()
 
 
@@ -335,26 +396,17 @@ def mosaic_collate(
     indices: list[int],
     image_size: int = 512,
 ) -> tuple[torch.Tensor, dict]:
-    """
-    Combine 4 images into a 2×2 mosaic grid of size image_size×image_size.
-    Adjusts bounding boxes and masks to mosaic coordinates.
-    Filters boxes with visible area < 20% of original.
-    """
     half = image_size // 2
     mosaic_img = np.zeros((image_size, image_size, 3), dtype=np.float32)
 
-    all_boxes: list[list[float]] = []
-    all_labels: list[int] = []
-    all_masks: list[np.ndarray] = []
-    all_areas: list[float] = []
-    all_iscrowd: list[int] = []
+    all_boxes, all_labels, all_masks = [], [], []
+    all_areas, all_iscrowd = [], []
     image_id = None
-
-    offsets = [(0, 0), (half, 0), (0, half), (half, half)]  # (x_off, y_off)
+    offsets = [(0, 0), (half, 0), (0, half), (half, half)]
 
     for i, idx in enumerate(indices[:4]):
         img_tensor, target = dataset._load_single(idx)
-        img = img_tensor.permute(1, 2, 0).numpy()  # CHW → HWC
+        img = img_tensor.permute(1, 2, 0).numpy()
 
         if image_id is None:
             image_id = target["image_id"]
@@ -364,45 +416,38 @@ def mosaic_collate(
         mosaic_img[y_off:y_off + half, x_off:x_off + half] = img_resized
 
         orig_h, orig_w = img.shape[:2]
-        scale_x = half / orig_w
-        scale_y = half / orig_h
+        scale_x, scale_y = half / orig_w, half / orig_h
 
-        boxes = target["boxes"].numpy()
-        masks = target["masks"].numpy()
-        labels = target["labels"].tolist()
-        areas = target["area"].tolist()
-        iscrowd = target["iscrowd"].tolist()
-
-        for j, (box, mask, label, area, crowd) in enumerate(zip(boxes, masks, labels, areas, iscrowd)):
-            x1 = box[0] * scale_x + x_off
-            y1 = box[1] * scale_y + y_off
-            x2 = box[2] * scale_x + x_off
-            y2 = box[3] * scale_y + y_off
-
-            x1c = max(0.0, min(x1, image_size - 1))
-            y1c = max(0.0, min(y1, image_size - 1))
-            x2c = max(0.0, min(x2, image_size - 1))
-            y2c = max(0.0, min(y2, image_size - 1))
+        for box, mask, label, area, crowd in zip(
+            target["boxes"].numpy(), target["masks"].numpy(),
+            target["labels"].tolist(), target["area"].tolist(),
+            target["iscrowd"].tolist(),
+        ):
+            x1c = max(0.0, min(box[0] * scale_x + x_off, image_size - 1))
+            y1c = max(0.0, min(box[1] * scale_y + y_off, image_size - 1))
+            x2c = max(0.0, min(box[2] * scale_x + x_off, image_size - 1))
+            y2c = max(0.0, min(box[3] * scale_y + y_off, image_size - 1))
 
             orig_area = (box[2] - box[0]) * (box[3] - box[1])
-            clipped_area = (x2c - x1c) * (y2c - y1c)
-
-            if orig_area > 0 and clipped_area / orig_area < 0.2:
+            clipped = (x2c - x1c) * (y2c - y1c)
+            if orig_area > 0 and clipped / orig_area < 0.2:
                 continue
             if x2c <= x1c or y2c <= y1c:
                 continue
 
-            mask_resized = cv2.resize(mask.astype(np.uint8), (half, half), interpolation=cv2.INTER_NEAREST).astype(bool)
-            mosaic_mask = np.zeros((image_size, image_size), dtype=bool)
-            mosaic_mask[y_off:y_off + half, x_off:x_off + half] = mask_resized
+            mask_r = cv2.resize(
+                mask.astype(np.uint8), (half, half), interpolation=cv2.INTER_NEAREST
+            ).astype(bool)
+            mos_mask = np.zeros((image_size, image_size), dtype=bool)
+            mos_mask[y_off:y_off + half, x_off:x_off + half] = mask_r
 
             all_boxes.append([x1c, y1c, x2c, y2c])
             all_labels.append(label)
-            all_masks.append(mosaic_mask)
-            all_areas.append(float(clipped_area))
+            all_masks.append(mos_mask)
+            all_areas.append(float(clipped))
             all_iscrowd.append(crowd)
 
-    mosaic_tensor = torch.from_numpy(mosaic_img.transpose(2, 0, 1)).float()  # HWC → CHW
+    mosaic_tensor = torch.from_numpy(mosaic_img.transpose(2, 0, 1)).float()
 
     if all_boxes:
         boxes_t = torch.tensor(all_boxes, dtype=torch.float32)
@@ -411,21 +456,17 @@ def mosaic_collate(
         boxes_t = torch.zeros((0, 4), dtype=torch.float32)
         masks_t = torch.zeros((0, image_size, image_size), dtype=torch.bool)
 
-    target = {
-        "boxes": boxes_t,
-        "labels": torch.tensor(all_labels, dtype=torch.int64),
-        "masks": masks_t,
+    return mosaic_tensor, {
+        "boxes":    boxes_t,
+        "labels":   torch.tensor(all_labels, dtype=torch.int64),
+        "masks":    masks_t,
         "image_id": image_id if image_id is not None else torch.tensor([0]),
-        "area": torch.tensor(all_areas, dtype=torch.float32),
-        "iscrowd": torch.tensor(all_iscrowd, dtype=torch.int64),
+        "area":     torch.tensor(all_areas, dtype=torch.float32),
+        "iscrowd":  torch.tensor(all_iscrowd, dtype=torch.int64),
         "occlusion_level": "mosaic",
         "occlusion_ratio": torch.tensor(0.0, dtype=torch.float32),
     }
-    return mosaic_tensor, target
 
 
 def collate_fn(batch: list[tuple[torch.Tensor, dict]]) -> tuple[list[torch.Tensor], list[dict]]:
-    """DataLoader collate function — keep images and targets as lists (required by Mask-RCNN)."""
-    images = [item[0] for item in batch]
-    targets = [item[1] for item in batch]
-    return images, targets
+    return [item[0] for item in batch], [item[1] for item in batch]

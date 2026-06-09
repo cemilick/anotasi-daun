@@ -59,6 +59,6 @@ tensorboard_dir: runs/local/
 log_every:    5                # log lebih sering (batch kecil)
 
 # Oklusi
-occlusion_thresholds: [0.15, 0.40]
+occlusion_thresholds: null    # null = auto dari persentil ke-33 & ke-67 training set
 occlusion_filter: null
 occlusion_stats: true

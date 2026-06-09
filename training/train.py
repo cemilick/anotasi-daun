@@ -244,24 +244,40 @@ def train(
         if cfg.get("num_workers", 4) > 0:
             print("Note: num_workers set to 0 (required for CPU/DirectML on Windows)")
 
-    occlusion_thresholds = tuple(cfg.get("occlusion_thresholds", [0.15, 0.40]))
+    # occlusion_thresholds: null di config → auto dari persentil training set
+    _thresh_cfg = cfg.get("occlusion_thresholds")
+    occlusion_thresholds: tuple[float, float] | None = (
+        tuple(_thresh_cfg) if _thresh_cfg is not None else None
+    )
     occlusion_filter = cfg.get("occlusion_filter")
 
     # ── Occlusion Statistics ──
+    # Kalibrasi threshold dari training set, lalu pakai untuk val/test.
     _occ_stats_train: dict | None = None
+    _calibrated_thresholds: tuple[float, float] | None = occlusion_thresholds
+
     if cfg.get("occlusion_stats", False):
-        for split, json_key in [("train", "train_json"), ("val", "val_json")]:
+        train_json = cfg.get("train_json")
+        if train_json:
+            print("\nOklusi [train]:")
+            _occ_stats_train = compute_dataset_occlusion_stats(
+                train_json, thresholds=_calibrated_thresholds, verbose=True
+            )
+            # Simpan threshold yang dipakai (bisa hasil auto) untuk val/test
+            _calibrated_thresholds = _occ_stats_train["thresholds"]
+
+        for split, json_key in [("val", "val_json")]:
             json_path = cfg.get(json_key)
             if json_path:
                 print(f"\nOklusi [{split}]:")
-                stats = compute_dataset_occlusion_stats(
-                    json_path,
-                    thresholds=occlusion_thresholds,
-                    verbose=True,
+                compute_dataset_occlusion_stats(
+                    json_path, thresholds=_calibrated_thresholds, verbose=True
                 )
-                if json_key == "train_json":
-                    _occ_stats_train = stats
         print()
+
+    # Gunakan threshold terkalibrasi untuk DaunDataset
+    if _calibrated_thresholds is not None:
+        occlusion_thresholds = _calibrated_thresholds
 
     # ── Datasets & DataLoaders ──
     train_ds = DaunDataset(
@@ -321,6 +337,7 @@ def train(
         eta_min=cfg.get("lr_min", 1e-6),
     )
 
+    scaler = torch.cuda.amp.GradScaler(enabled=(device_label == "cuda"))
     loss_weights = cfg.get("loss_weights", {"focal": 1.0, "dice": 1.0, "boundary": 1.0})
     save_every = cfg.get("save_every", 5)
     log_every = cfg.get("log_every", 20)
@@ -341,7 +358,7 @@ def train(
 
     tb_writer = SummaryWriter(log_dir=cfg.get("tensorboard_dir", "runs"))
 
-    # Log occlusion distribution to TensorBoard (one-time scalars at step 0)
+    # Log distribusi oklusi ke TensorBoard sekali di step 0
     if _occ_stats_train is None and cfg.get("occlusion_stats", False):
         _occ_stats_train = compute_dataset_occlusion_stats(
             cfg.get("train_json"), thresholds=occlusion_thresholds, verbose=False
@@ -354,6 +371,8 @@ def train(
                 _occ_stats_train[level] / total_imgs * 100,
                 0,
             )
+        low_t, high_t = _occ_stats_train["thresholds"]
+        print(f"Threshold oklusi (dikalibrasi dari train): rendah<{low_t:.4f}, tinggi≥{high_t:.4f}")
 
     # ── Resume ──
     # Priority: explicit `resume` in config → auto-detect latest epoch_XXX.pth
@@ -390,28 +409,32 @@ def train(
 
         for step, (images, targets) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}", ncols=80)):
             images = [img.to(device) for img in images]
-            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+            targets = [{k: v.to(device) for k, v in t.items() if isinstance(v, torch.Tensor)} for t in targets]
 
             optimizer.zero_grad()
-            loss_dict, _ = model(images, targets)
+            try:
+                with torch.cuda.amp.autocast(enabled=(device_label == "cuda")):
+                    loss_dict, _ = model(images, targets)
+                    standard_loss = sum(
+                        v for k, v in loss_dict.items()
+                        if k not in ("loss_mask",)
+                    )
+                    mask_loss = loss_dict.get("loss_mask", torch.tensor(0.0, device=device))
+                    total_loss = standard_loss + mask_loss
 
-            # Standard Mask-RCNN losses (except loss_mask — replaced by combined)
-            standard_loss = sum(
-                v for k, v in loss_dict.items()
-                if k not in ("loss_mask",)
-            )
-
-            # Compute combined mask loss from model predictions
-            # We use loss_mask as a proxy since we can't easily access raw predictions
-            # from the torchvision Mask-RCNN forward without major surgery.
-            # For full custom loss, the combined_loss is applied to the mask logits
-            # obtained from the mask head directly.
-            mask_loss = loss_dict.get("loss_mask", torch.tensor(0.0, device=device))
-            total_loss = standard_loss + mask_loss
-
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+                scaler.scale(total_loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    torch.cuda.empty_cache()
+                    optimizer.zero_grad()
+                    print(f"\n[OOM] Epoch {epoch+1} step {step} — batch skipped, cache cleared")
+                    global_step += 1
+                    continue
+                raise
 
             # Accumulate for logging
             for k, v in loss_dict.items():
@@ -429,31 +452,57 @@ def train(
         scheduler.step()
 
         # ── Validation ──
-        val_metrics = evaluate(model, val_loader, device=device_label if device_label != "directml" else "cpu")
+        _eval_device = device_label if device_label != "directml" else "cpu"
+        try:
+            val_metrics = evaluate(model, val_loader, device=_eval_device)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                torch.cuda.empty_cache()
+                val_metrics = {
+                    "bf_score": 0.0, "mAP": 0.0, "mAP_50": 0.0, "mAP_75": 0.0,
+                    "mAP_small": 0.0, "mAP_medium": 0.0, "mAP_large": 0.0,
+                    "mAR_100": 0.0, "iou_mean": 0.0,
+                }
+                print(f"\n[OOM] Validation skipped at epoch {epoch+1} — metrics set to 0")
+            else:
+                raise
         bf_score = val_metrics["bf_score"]
 
         tb_writer.add_scalar("val/bf_score", bf_score, epoch)
         tb_writer.add_scalar("val/mAP_50", val_metrics.get("mAP_50", 0.0), epoch)
 
+        _mem_str = ""
+        if device_label == "cuda":
+            _alloc = torch.cuda.memory_allocated(0) / 1e9
+            _reserved = torch.cuda.memory_reserved(0) / 1e9
+            _mem_str = f" | GPU {_alloc:.1f}/{_reserved:.1f}GB"
+            torch.cuda.empty_cache()
         print(
             f"Epoch {epoch + 1}/{epochs} | "
             f"bf_score={bf_score:.4f} | "
             f"mAP_50={val_metrics.get('mAP_50', 0):.4f} | "
             f"lr={optimizer.param_groups[0]['lr']:.2e}"
+            f"{_mem_str}"
         )
 
         # ── Checkpoints ──
         if (epoch + 1) % save_every == 0:
             ckpt_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pth"
-            save_checkpoint(model, optimizer, scheduler, epoch, bf_score, ckpt_path)
-            _sync_to_drive(ckpt_path, _drive_dir)
+            try:
+                save_checkpoint(model, optimizer, scheduler, epoch, bf_score, ckpt_path)
+                _sync_to_drive(ckpt_path, _drive_dir)
+            except OSError as e:
+                print(f"  [WARNING] Checkpoint save failed (disk full?): {e}")
 
         if bf_score > best_bf_score:
             best_bf_score = bf_score
             _best_save = checkpoint_dir / "best.pth"
-            save_checkpoint(model, optimizer, scheduler, epoch, bf_score, _best_save)
-            _sync_to_drive(_best_save, _drive_dir)
-            print(f"  >> New best BF Score: {best_bf_score:.4f}")
+            try:
+                save_checkpoint(model, optimizer, scheduler, epoch, bf_score, _best_save)
+                _sync_to_drive(_best_save, _drive_dir)
+                print(f"  >> New best BF Score: {best_bf_score:.4f}")
+            except OSError as e:
+                print(f"  [WARNING] best.pth save failed (disk full?): {e}")
 
     tb_writer.close()
     print(f"Training complete. Best BF Score: {best_bf_score:.4f}")

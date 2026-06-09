@@ -53,7 +53,7 @@ log_every:    20               # log setiap N iterasi
 
 # Oklusi
 # Threshold untuk klasifikasi: rendah < low_thresh <= sedang < high_thresh <= tinggi
-occlusion_thresholds: [0.15, 0.40]
+occlusion_thresholds: null    # null = auto dari persentil ke-33 & ke-67 training set
 # occlusion_filter: null = gunakan semua data
 # occlusion_filter: rendah | sedang | tinggi = filter hanya gambar dengan level tersebut
 occlusion_filter: null
