@@ -1,2 +1,6 @@
 .venv/
 .env
+annotations/*
+roboflow/results/*
+runs/*
+.claude/*
