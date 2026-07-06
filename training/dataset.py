@@ -260,7 +260,10 @@ class DaunDataset(Dataset):
             x1, y1 = int(pos[1].min()), int(pos[0].min())
             x2, y2 = int(pos[1].max()), int(pos[0].max())
             boxes.append([x1, y1, x2, y2])
-            labels.append(ann.get("category_id", 1))
+            # Roboflow sering mengekspor category_id=0 (background di PyTorch R-CNN)
+            # atau category_id=2, 3, dst. Karena ini adalah binary instance segmentation
+            # (daun vs bg, num_classes=2), semua anotasi daun WAJIB berlabel 1:
+            labels.append(1)
             areas.append(float(ann.get("area", (x2 - x1) * (y2 - y1))))
             iscrowd.append(int(ann.get("iscrowd", 0)))
 
