@@ -125,6 +125,8 @@ def evaluate(
                 img_ious: list[float] = []
 
                 for box, score, label, mask in zip(boxes, scores, labels, masks):
+                    if score < 0.05:
+                        continue
                     mask_bin = (mask > 0.5).astype(np.uint8)
 
                     # RLE encode for pycocotools
@@ -141,7 +143,8 @@ def evaluate(
                         "score": float(score),
                     })
 
-                    if len(gt_masks_np) > 0:
+                    # Hanya hitung BF Score, IoU, dan Pixel Acc pada deteksi yang meyakinkan (score >= 0.50)
+                    if len(gt_masks_np) > 0 and score >= 0.50:
                         ious = [_compute_iou(mask_bin.astype(bool), gt.astype(bool)) for gt in gt_masks_np]
                         best_gt = gt_masks_np[int(np.argmax(ious))]
                         img_pred_masks.append(mask_bin.astype(bool))
