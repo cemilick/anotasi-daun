@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from scipy.ndimage import distance_transform_edt
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
@@ -105,7 +106,7 @@ def evaluate(
     gt_batches: list[list[dict]] = []
 
     with torch.no_grad():
-        for images, targets in data_loader:
+        for images, targets in tqdm(data_loader, desc="Validasi (BF Score & mAP)", leave=False, ncols=80):
             gt_batches.append(targets)
             images = [img.to(device) for img in images]
             _, detections = model(images)
