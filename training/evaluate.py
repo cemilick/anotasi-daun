@@ -98,9 +98,10 @@ def evaluate(
     if device == "cuda":
         torch.cuda.empty_cache()
 
-    coco_dt_list = []
+    coco_dt_list: list[dict] = []
     bf_scores_per_image: list[float] = []
     iou_scores_per_image: list[float] = []
+    pixel_acc_per_image: list[float] = []  # Pixel accuracy (untuk perbandingan dengan DeepLabV2)
     gt_batches: list[list[dict]] = []
 
     with torch.no_grad():
@@ -146,6 +147,13 @@ def evaluate(
                         img_gt_masks.append(best_gt.astype(bool))
                         img_ious.append(max(ious))
 
+                        # Pixel accuracy: (TP + TN) / total_pixels
+                        pred_bool = mask_bin.astype(bool)
+                        gt_bool   = best_gt.astype(bool)
+                        total_px  = pred_bool.size
+                        correct   = int((pred_bool == gt_bool).sum())
+                        pixel_acc_per_image.append(correct / total_px)
+
                 # BF score dihitung per gambar — tidak ada akumulasi mask global
                 if img_pred_masks:
                     bf_scores_per_image.append(compute_bf_score(img_pred_masks, img_gt_masks))
@@ -159,6 +167,7 @@ def evaluate(
     map_results = _run_coco_eval(coco_gt, coco_dt_list, iou_type)
 
     bf_score = float(np.mean(bf_scores_per_image)) if bf_scores_per_image else 0.0
+    pixel_accuracy = float(np.mean(pixel_acc_per_image)) if pixel_acc_per_image else 0.0
 
     # Restore training mode
     if was_training:
@@ -177,6 +186,7 @@ def evaluate(
         "mAR_100": map_results.get("mAR_100", 0.0),
         "bf_score": bf_score,
         "iou_mean": float(np.mean(iou_scores_per_image)) if iou_scores_per_image else 0.0,
+        "pixel_accuracy": pixel_accuracy,   # Metrik tambahan untuk perbandingan dgn DeepLabV2
     }
 
 

@@ -10,7 +10,6 @@ from pathlib import Path
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
-import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -107,33 +106,25 @@ def dice_loss(
     return 1.0 - (2.0 * intersection + smooth) / (pred_sig.sum() + target_flat.sum() + smooth)
 
 
-def _extract_boundary(mask: np.ndarray, kernel_size: int = 3) -> np.ndarray:
-    """Extract boundary pixels via morphological dilation - erosion."""
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-    dilated = cv2.dilate(mask, kernel, iterations=1)
-    eroded = cv2.erode(mask, kernel, iterations=1)
-    return (dilated - eroded).astype(np.float32)
-
-
 def boundary_loss(
     pred_boundary: torch.Tensor,
     target_mask: torch.Tensor,
 ) -> torch.Tensor:
     """
-    BCE loss between predicted boundary map and boundary extracted from GT mask.
-    target_mask: (N, H, W) bool or float
-    pred_boundary: (N, 1, H, W) float logits or probabilities
-    """
-    device = pred_boundary.device
-    boundary_targets = []
-    for i in range(target_mask.shape[0]):
-        m = target_mask[i].cpu().numpy().astype(np.uint8)
-        b = _extract_boundary(m)
-        boundary_targets.append(torch.from_numpy(b))
+    BCE loss antara boundary map prediksi dan boundary yang diekstrak dari GT mask.
+    Seluruh operasi dilakukan di GPU menggunakan F.max_pool2d
+    (dilation ≡ MaxPool, erosion ≡ -MaxPool(-x)) — menghilangkan CPU-GPU transfer bottleneck.
 
-    boundary_target = torch.stack(boundary_targets, dim=0).unsqueeze(1).to(device)  # (N,1,H,W)
-    pred_flat = pred_boundary.float().view(-1)
-    target_flat = boundary_target.float().view(-1)
+    Args:
+        pred_boundary: (N, 1, H, W) float probabilities dari BoundaryAttentionHead
+        target_mask:   (N, H, W) binary GT mask
+    """
+    x = target_mask.float().unsqueeze(1)                      # (N, 1, H, W)
+    dilated = F.max_pool2d(x, kernel_size=3, stride=1, padding=1)
+    eroded  = -F.max_pool2d(-x, kernel_size=3, stride=1, padding=1)
+    boundary_target = (dilated - eroded).clamp(0.0, 1.0)      # (N, 1, H, W)
+    pred_flat   = pred_boundary.float().view(-1)
+    target_flat = boundary_target.view(-1)
     return F.binary_cross_entropy(pred_flat.clamp(1e-7, 1 - 1e-7), target_flat)
 
 
@@ -467,20 +458,36 @@ def train(
             else:
                 raise
         bf_score = val_metrics["bf_score"]
+        mAP_50   = val_metrics.get("mAP_50", 0.0)
+        mAP_75   = val_metrics.get("mAP_75", 0.0)
+        iou_mean = val_metrics.get("iou_mean", 0.0)
+        mAR_100  = val_metrics.get("mAR_100", 0.0)
 
-        tb_writer.add_scalar("val/bf_score", bf_score, epoch)
-        tb_writer.add_scalar("val/mAP_50", val_metrics.get("mAP_50", 0.0), epoch)
+        # ── TensorBoard: metrik validasi lengkap ──
+        tb_writer.add_scalar("val/bf_score",       bf_score,  epoch)
+        tb_writer.add_scalar("val/mAP",            val_metrics.get("mAP", 0.0),  epoch)
+        tb_writer.add_scalar("val/mAP_50",         mAP_50,    epoch)
+        tb_writer.add_scalar("val/mAP_75",         mAP_75,    epoch)
+        tb_writer.add_scalar("val/mAR_100",        mAR_100,   epoch)
+        tb_writer.add_scalar("val/iou_mean",       iou_mean,  epoch)
+        tb_writer.add_scalar("val/pixel_accuracy", val_metrics.get("pixel_accuracy", 0.0), epoch)
+
+        # ── TensorBoard: rata-rata loss per epoch ──
+        n_steps = max(len(train_loader), 1)
+        for loss_key, loss_val in epoch_losses.items():
+            tb_writer.add_scalar(f"train_epoch/{loss_key}", loss_val / n_steps, epoch)
 
         _mem_str = ""
         if device_label == "cuda":
-            _alloc = torch.cuda.memory_allocated(0) / 1e9
+            _alloc    = torch.cuda.memory_allocated(0) / 1e9
             _reserved = torch.cuda.memory_reserved(0) / 1e9
-            _mem_str = f" | GPU {_alloc:.1f}/{_reserved:.1f}GB"
+            _mem_str  = f" | GPU {_alloc:.1f}/{_reserved:.1f}GB"
             torch.cuda.empty_cache()
+
         print(
-            f"Epoch {epoch + 1}/{epochs} | "
-            f"bf_score={bf_score:.4f} | "
-            f"mAP_50={val_metrics.get('mAP_50', 0):.4f} | "
+            f"Epoch {epoch + 1:>3}/{epochs} | "
+            f"BF={bf_score:.4f} | mAP@50={mAP_50:.4f} | mAP@75={mAP_75:.4f} | "
+            f"IoU={iou_mean:.4f} | PixAcc={val_metrics.get('pixel_accuracy', 0.0):.4f} | "
             f"lr={optimizer.param_groups[0]['lr']:.2e}"
             f"{_mem_str}"
         )
