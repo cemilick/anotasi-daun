@@ -38,8 +38,31 @@ ABLATION_CONFIGS: dict[str, dict] = {
         "use_aspp": True,
         "aspp_rates": [6, 12, 18, 24],
         "use_boundary_head": True,
-        "loss": "focal+dice+boundary",
         "description": "Prop-DeOccNet (Full)",
+    },
+}
+
+BACKBONE_ABLATION_CONFIGS: dict[str, dict] = {
+    "ResNet-50": {
+        "backbone": "resnet50",
+        "use_aspp": True,
+        "aspp_rates": [6, 12, 18, 24],
+        "use_boundary_head": True,
+        "description": "Prop-DeOccNet (ResNet-50)",
+    },
+    "MobileNetV3": {
+        "backbone": "mobilenet_v3_large",
+        "use_aspp": True,
+        "aspp_rates": [6, 12, 18, 24],
+        "use_boundary_head": True,
+        "description": "Prop-DeOccNet (MobileNetV3-Large)",
+    },
+    "ResNet-101": {
+        "backbone": "resnet101",
+        "use_aspp": True,
+        "aspp_rates": [6, 12, 18, 24],
+        "use_boundary_head": True,
+        "description": "Prop-DeOccNet (ResNet-101 Default)",
     },
 }
 
@@ -47,6 +70,8 @@ ABLATION_CONFIGS: dict[str, dict] = {
 def _override_cfg(base_cfg: dict, ablation: dict) -> dict:
     """Merge base YAML config with ablation overrides."""
     cfg = copy.deepcopy(base_cfg)
+    if "backbone" in ablation:
+        cfg["backbone"] = ablation["backbone"]
     if "aspp_rates" in ablation:
         cfg["aspp_rates"] = ablation["aspp_rates"]
     cfg["use_boundary_head"] = ablation.get("use_boundary_head", True)

@@ -165,11 +165,22 @@ class PropDeOccNet(nn.Module):
 
         # Build FPN backbone
         weights = "DEFAULT" if pretrained_backbone else None
-        fpn_backbone = resnet_fpn_backbone(
-            backbone_name=backbone,
-            weights=weights,
-            trainable_layers=trainable_backbone_layers,
-        )
+        if backbone in ["resnet18", "resnet34", "resnet50", "resnet101", "resnext50_32x4d", "resnext101_32x8d"]:
+            fpn_backbone = resnet_fpn_backbone(
+                backbone_name=backbone,
+                weights=weights,
+                trainable_layers=trainable_backbone_layers,
+            )
+        elif backbone in ["mobilenetv3", "mobilenet_v3_large"]:
+            from torchvision.models.detection.backbone_utils import mobilenet_backbone
+            fpn_backbone = mobilenet_backbone(
+                backbone_name="mobilenet_v3_large",
+                weights=weights,
+                fpn=True,
+                trainable_layers=trainable_backbone_layers,
+            )
+        else:
+            raise ValueError(f"Unsupported backbone: {backbone}")
 
         # Base Mask-RCNN without pretrained weights (we use custom backbone)
         self._model = MaskRCNN(
