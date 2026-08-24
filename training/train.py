@@ -309,6 +309,7 @@ def train(
         num_classes=cfg.get("num_classes", 2),
         backbone=cfg.get("backbone", "resnet101"),
         pretrained_backbone=cfg.get("pretrained_backbone", True),
+        use_aspp=cfg.get("use_aspp", True),
         aspp_rates=cfg.get("aspp_rates", [6, 12, 18, 24]),
         aspp_out_channels=cfg.get("aspp_out_channels", 256),
         trainable_backbone_layers=cfg.get("trainable_backbone_layers", 3),

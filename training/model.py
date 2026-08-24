@@ -108,14 +108,18 @@ class BoundaryAttentionHead(nn.Module):
 
 
 class ASPPMaskHead(nn.Module):
-    """Mask head that applies ASPP + optional boundary attention before conv layers."""
+    """
+    Mask head that applies a multi-scale context module (ASPP, or a GAP-based
+    substitute used for the "no ASPP" ablation variants) plus an optional
+    boundary attention gate before the mask conv layers.
+    """
 
     def __init__(
         self,
         in_channels: int,
         layers: list[int],
         dilation: int,
-        aspp: ASPPModule,
+        aspp: nn.Module,
         boundary_head: BoundaryAttentionHead | None,
     ) -> None:
         super().__init__()
@@ -154,6 +158,7 @@ class PropDeOccNet(nn.Module):
         num_classes: int,
         backbone: str = "resnet101",
         pretrained_backbone: bool = True,
+        use_aspp: bool = True,
         aspp_rates: list[int] = None,
         aspp_out_channels: int = 256,
         trainable_backbone_layers: int = 3,
@@ -192,19 +197,29 @@ class PropDeOccNet(nn.Module):
         roi_out_channels = self._model.roi_heads.mask_roi_pool.output_size[0]  # 14
         in_ch = fpn_backbone.out_channels  # 256
 
-        aspp = ASPPModule(in_channels=in_ch, out_channels=aspp_out_channels, atrous_rates=aspp_rates)
+        if use_aspp:
+            context_module = ASPPModule(in_channels=in_ch, out_channels=aspp_out_channels, atrous_rates=aspp_rates)
+        else:
+            # Ablation variants without ASPP (M0/M2, Tesis Bab III Tabel 3.1): ASPP is
+            # replaced by a single Global Average Pooling layer + 1x1 convolution,
+            # not merely disabled. This keeps the feature-map dimensions identical to
+            # the ASPP branch while removing all multi-scale (atrous) context, so the
+            # ablation isolates ASPP's contribution rather than confounding it with a
+            # loss of capacity or a leftover atrous branch.
+            context_module = ASPPPooling(in_channels=in_ch, out_channels=aspp_out_channels)
         boundary_head = BoundaryAttentionHead(in_channels=aspp_out_channels) if use_boundary_head else None
 
-        # Override mask_head with ASPP-augmented version
+        # Override mask_head with ASPP-augmented (or GAP-substituted) version
         mask_layers = [256, 256, 256, 256]
         self._model.roi_heads.mask_head = ASPPMaskHead(
             in_channels=in_ch,
             layers=mask_layers,
             dilation=1,
-            aspp=aspp,
+            aspp=context_module,
             boundary_head=boundary_head,
         )
 
+        self.use_aspp = use_aspp
         self.use_boundary_head = use_boundary_head
 
     def forward(

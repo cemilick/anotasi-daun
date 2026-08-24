@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import pytest
 
-from training.model import ASPPModule, BoundaryAttentionHead, PropDeOccNet
+from training.model import ASPPModule, ASPPPooling, BoundaryAttentionHead, PropDeOccNet
 
 
 def make_fake_images(n: int = 2, h: int = 64, w: int = 64) -> list[torch.Tensor]:
@@ -101,6 +101,23 @@ def test_no_boundary_loss_when_disabled():
     targets = make_fake_targets()
     loss_dict, _ = model(images, targets)
     assert "loss_boundary" not in loss_dict
+
+
+def test_use_aspp_false_replaces_aspp_with_gap_module():
+    """Ablation variants M0/M2 (Tesis Bab III, Tabel 3.1) must replace ASPP with a
+    single Global Average Pooling + 1x1 conv module, not shrink it to one atrous
+    rate — otherwise the ablation still leaks some multi-scale context and no
+    longer isolates ASPP's contribution."""
+    model = PropDeOccNet(num_classes=2, backbone="resnet50", pretrained_backbone=False,
+                         use_aspp=False, use_boundary_head=False)
+    assert isinstance(model._model.roi_heads.mask_head.aspp, ASPPPooling)
+
+    model.train()
+    images = make_fake_images()
+    targets = make_fake_targets()
+    loss_dict, _ = model(images, targets)
+    required_keys = {"loss_classifier", "loss_box_reg", "loss_mask", "loss_objectness", "loss_rpn_box_reg"}
+    assert required_keys.issubset(loss_dict.keys()), f"Missing keys: {required_keys - loss_dict.keys()}"
 
 
 def test_checkpoint_roundtrip(small_model):

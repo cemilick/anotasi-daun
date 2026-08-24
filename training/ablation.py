@@ -75,18 +75,27 @@ def _override_cfg(base_cfg: dict, ablation: dict) -> dict:
     if "aspp_rates" in ablation:
         cfg["aspp_rates"] = ablation["aspp_rates"]
     cfg["use_boundary_head"] = ablation.get("use_boundary_head", True)
-    # If use_aspp=False, set rates to empty so ASPPModule is bypassed by identity
-    if not ablation.get("use_aspp", True):
-        cfg["use_aspp"] = False
-    else:
-        cfg["use_aspp"] = True
+    # use_aspp=False → PropDeOccNet replaces ASPP with a GAP + 1x1 conv module
+    # instead (see model.PropDeOccNet), matching Tesis Bab III Tabel 3.1.
+    cfg["use_aspp"] = ablation.get("use_aspp", True)
     return cfg
 
 
-def run_ablation(config_path: str = "training/config_train.yaml") -> None:
+def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 20) -> None:
     """
     Train and evaluate all 4 ablation variants (M0–M3) sequentially.
     Saves results to ablation_results.json and checkpoints per variant.
+
+    Parameters
+    ----------
+    epochs
+        Epoch count used for *each* of the 4 ablation variants. Deliberately
+        much lower than the main training run's ``epochs`` (80): the ablation
+        study only needs the *relative* ranking between M0–M3 to validate
+        H1/H2/H3, not a fully-converged SOTA checkpoint, and 4 variants × 80
+        epochs (~17-18h on a Kaggle T4, per the v0.0.3 run log) would exceed a
+        single Kaggle GPU session. Does not affect ``config_train.yaml``'s
+        ``epochs`` used by the main training run in train.py.
     """
     with open(config_path, encoding="utf-8") as f:
         base_cfg = yaml.safe_load(f)
@@ -102,6 +111,7 @@ def run_ablation(config_path: str = "training/config_train.yaml") -> None:
         print(f"{'='*60}")
 
         cfg = _override_cfg(base_cfg, ablation)
+        cfg["epochs"] = epochs
 
         # Per-variant checkpoint dir
         variant_ckpt_dir = checkpoint_base / f"ablation_{variant}"
@@ -110,12 +120,12 @@ def run_ablation(config_path: str = "training/config_train.yaml") -> None:
         cfg["tensorboard_dir"] = f"runs/ablation_{variant}"
 
         # ── Build model ──
-        aspp_rates = cfg.get("aspp_rates", [6, 12, 18, 24]) if cfg.get("use_aspp", True) else [6]
         model = PropDeOccNet(
             num_classes=cfg.get("num_classes", 2),
             backbone=cfg.get("backbone", "resnet101"),
             pretrained_backbone=cfg.get("pretrained_backbone", True),
-            aspp_rates=aspp_rates,
+            use_aspp=cfg.get("use_aspp", True),
+            aspp_rates=cfg.get("aspp_rates", [6, 12, 18, 24]),
             aspp_out_channels=cfg.get("aspp_out_channels", 256),
             trainable_backbone_layers=cfg.get("trainable_backbone_layers", 3),
             use_boundary_head=cfg.get("use_boundary_head", True),
@@ -207,4 +217,5 @@ def run_ablation(config_path: str = "training/config_train.yaml") -> None:
 if __name__ == "__main__":
     import sys
     config = sys.argv[1] if len(sys.argv) > 1 else "training/config_train.yaml"
-    run_ablation(config)
+    epochs = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+    run_ablation(config, epochs=epochs)
