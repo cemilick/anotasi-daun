@@ -175,7 +175,9 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
             model.train()
             for images, targets in train_loader:
                 images = [img.to(device) for img in images]
-                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+                # DaunDataset targets also carry non-tensor fields (occlusion_level:
+                # str), so only move actual tensors — matches train.py's loop.
+                targets = [{k: v.to(device) for k, v in t.items() if isinstance(v, torch.Tensor)} for t in targets]
                 optimizer.zero_grad()
                 loss_dict, _ = model(images, targets)
                 total_loss = sum(loss_dict.values())
