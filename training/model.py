@@ -122,6 +122,14 @@ class ASPPMaskHead(nn.Module):
         aspp: nn.Module,
         boundary_head: BoundaryAttentionHead | None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        in_channels
+            Channel count of ``aspp``'s *output* (i.e. what ``self.blocks``
+            actually receives) — NOT the pre-ASPP feature channel count.
+            Must equal ``aspp``'s configured ``out_channels``.
+        """
         super().__init__()
         self.aspp = aspp
         self.boundary_head = boundary_head
@@ -209,10 +217,13 @@ class PropDeOccNet(nn.Module):
             context_module = ASPPPooling(in_channels=in_ch, out_channels=aspp_out_channels)
         boundary_head = BoundaryAttentionHead(in_channels=aspp_out_channels) if use_boundary_head else None
 
-        # Override mask_head with ASPP-augmented (or GAP-substituted) version
+        # Override mask_head with ASPP-augmented (or GAP-substituted) version.
+        # in_channels here must match context_module's *output* channels
+        # (aspp_out_channels), since that's what ASPPMaskHead.blocks actually
+        # receives — not in_ch (the pre-ASPP feature channel count).
         mask_layers = [256, 256, 256, 256]
         self._model.roi_heads.mask_head = ASPPMaskHead(
-            in_channels=in_ch,
+            in_channels=aspp_out_channels,
             layers=mask_layers,
             dilation=1,
             aspp=context_module,

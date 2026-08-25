@@ -103,6 +103,22 @@ def test_no_boundary_loss_when_disabled():
     assert "loss_boundary" not in loss_dict
 
 
+def test_aspp_out_channels_mismatch_with_backbone_channels():
+    """ASPPMaskHead.blocks must be sized from the context module's OUTPUT
+    channels (aspp_out_channels), not the pre-ASPP backbone feature channels.
+    Regression test: previously this only "worked" by coincidence because
+    config_train.yaml always sets aspp_out_channels=256 == in_ch=256; any
+    other value (e.g. during hyperparameter tuning) crashed with a Conv2d
+    channel-mismatch RuntimeError."""
+    model = PropDeOccNet(num_classes=2, backbone="resnet50", pretrained_backbone=False,
+                         aspp_rates=[6, 12], aspp_out_channels=32, use_boundary_head=True)
+    model.train()
+    images = make_fake_images()
+    targets = make_fake_targets()
+    loss_dict, _ = model(images, targets)
+    assert "loss_mask" in loss_dict
+
+
 def test_use_aspp_false_replaces_aspp_with_gap_module():
     """Ablation variants M0/M2 (Tesis Bab III, Tabel 3.1) must replace ASPP with a
     single Global Average Pooling + 1x1 conv module, not shrink it to one atrous
