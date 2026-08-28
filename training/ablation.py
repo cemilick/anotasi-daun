@@ -101,11 +101,25 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
         base_cfg = yaml.safe_load(f)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    results = []
-
     checkpoint_base = Path(base_cfg.get("checkpoint_dir", "checkpoints"))
+    results_path = checkpoint_base / "ablation_results.json"
+
+    # Resume support: a Kaggle session can be killed mid-run (time limit / GPU
+    # quota) between variants, with no Python exception to catch. Rather than
+    # re-training already-finished variants from scratch on the next run, load
+    # whatever was saved so far and skip them.
+    results: list[dict] = []
+    if results_path.exists():
+        with open(results_path, encoding="utf-8") as f:
+            results = json.load(f)
+        print(f"[INFO] Melanjutkan dari {results_path} — {len(results)} varian sudah selesai.")
+    done_variants = {r["model"] for r in results}
 
     for variant, ablation in ABLATION_CONFIGS.items():
+        if variant in done_variants:
+            print(f"\n[SKIP] {variant} sudah selesai sebelumnya (ada di {results_path.name}).")
+            continue
+
         print(f"\n{'='*60}")
         print(f"Ablation variant: {variant} — {ablation['description']}")
         print(f"{'='*60}")
@@ -202,12 +216,14 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
         results.append(result)
         print(f"{variant} → BF Score: {result['bf_score']:.4f} | mAP_50: {result['mAP_50']:.4f}")
 
-    # ── Save ablation_results.json ──
-    out_path = checkpoint_base / "ablation_results.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-    print(f"\nAblation results saved to {out_path}")
+        # Save immediately after each variant so a killed/interrupted session
+        # (Kaggle time limit, quota, manual stop) doesn't lose finished work —
+        # the next run resumes via the `done_variants` check above instead of
+        # re-training this variant from scratch.
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(results_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] Progres disimpan ke {results_path} ({len(results)}/{len(ABLATION_CONFIGS)} varian selesai).")
 
     # Summary table
     print("\n── Ablation Summary ──")
