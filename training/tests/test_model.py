@@ -136,6 +136,38 @@ def test_use_aspp_false_replaces_aspp_with_gap_module():
     assert required_keys.issubset(loss_dict.keys()), f"Missing keys: {required_keys - loss_dict.keys()}"
 
 
+def test_combined_loss_mode_backward_works():
+    """loss_mode='combined' (default) must actually run the Focal+Dice+Boundary
+    path (Persamaan 3.4-3.7, Bab III) — not silently fall back — and the
+    resulting loss_mask must be backprop-able end to end."""
+    model = PropDeOccNet(num_classes=2, backbone="resnet50", pretrained_backbone=False,
+                         aspp_rates=[6, 12], use_boundary_head=True,
+                         loss_weights={"focal": 1.0, "dice": 1.0, "boundary": 1.0})
+    model.train()
+    images = make_fake_images()
+    targets = make_fake_targets()
+    loss_dict, _ = model(images, targets)
+    assert not model._combined_loss_warned, "Combined loss path fell back to standard BCE"
+    total_loss = sum(loss_dict.values())
+    total_loss.backward()
+    mask_grad = model._model.roi_heads.mask_predictor.mask_fcn_logits.weight.grad
+    assert mask_grad is not None and torch.isfinite(mask_grad).all()
+
+
+def test_standard_loss_mode_matches_vanilla_maskrcnn():
+    """loss_mode='standard' (M0 baseline, Tabel 3.1) must bypass the custom
+    combined loss entirely and use torchvision's own loss_mask untouched."""
+    model = PropDeOccNet(num_classes=2, backbone="resnet50", pretrained_backbone=False,
+                         use_aspp=False, use_boundary_head=False, loss_mode="standard")
+    model.train()
+    images = make_fake_images()
+    targets = make_fake_targets()
+    loss_dict, _ = model(images, targets)
+    assert not model._combined_loss_warned
+    required_keys = {"loss_classifier", "loss_box_reg", "loss_mask", "loss_objectness", "loss_rpn_box_reg"}
+    assert required_keys.issubset(loss_dict.keys())
+
+
 def test_checkpoint_roundtrip(small_model):
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "model.pth"

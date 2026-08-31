@@ -38,6 +38,7 @@ ABLATION_CONFIGS: dict[str, dict] = {
         "use_aspp": True,
         "aspp_rates": [6, 12, 18, 24],
         "use_boundary_head": True,
+        "loss": "focal+dice+boundary",
         "description": "Prop-DeOccNet (Full)",
     },
 }
@@ -78,6 +79,10 @@ def _override_cfg(base_cfg: dict, ablation: dict) -> dict:
     # use_aspp=False → PropDeOccNet replaces ASPP with a GAP + 1x1 conv module
     # instead (see model.PropDeOccNet), matching Tesis Bab III Tabel 3.1.
     cfg["use_aspp"] = ablation.get("use_aspp", True)
+    # loss="standard" (M0 baseline only) → BCE loss_mask bawaan torchvision,
+    # tanpa modifikasi. Varian lain (M1-M3) → Focal+Dice(+Boundary), Persamaan
+    # 3.4-3.7 Bab III, lewat PropDeOccNet.loss_mode="combined".
+    cfg["loss_mode"] = "standard" if ablation.get("loss") == "standard" else "combined"
     return cfg
 
 
@@ -143,6 +148,8 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
             aspp_out_channels=cfg.get("aspp_out_channels", 256),
             trainable_backbone_layers=cfg.get("trainable_backbone_layers", 3),
             use_boundary_head=cfg.get("use_boundary_head", True),
+            loss_weights=cfg.get("loss_weights", {"focal": 1.0, "dice": 1.0, "boundary": 1.0}),
+            loss_mode=cfg.get("loss_mode", "combined"),
         ).to(device)
 
         optimizer = torch.optim.Adam(
