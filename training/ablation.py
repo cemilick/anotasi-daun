@@ -88,24 +88,44 @@ def _override_cfg(base_cfg: dict, ablation: dict) -> dict:
     return cfg
 
 
-def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 20) -> None:
+def run_ablation(
+    config_path: str = "training/config_train.yaml",
+    epochs: int = 20,
+    variants: list[str] | None = None,
+    max_steps_per_epoch: int | None = None,
+) -> None:
     """
-    Train and evaluate all 4 ablation variants (M0–M3) sequentially.
+    Train and evaluate ablation variants (M0–M3) sequentially.
     Saves results to ablation_results.json and checkpoints per variant.
 
     Parameters
     ----------
     epochs
-        Epoch count used for *each* of the 4 ablation variants. Deliberately
-        much lower than the main training run's ``epochs`` (80): the ablation
-        study only needs the *relative* ranking between M0–M3 to validate
-        H1/H2/H3, not a fully-converged SOTA checkpoint, and 4 variants × 80
-        epochs (~17-18h on a Kaggle T4, per the v0.0.3 run log) would exceed a
-        single Kaggle GPU session. Does not affect ``config_train.yaml``'s
-        ``epochs`` used by the main training run in train.py.
+        Epoch count used for *each* variant run. Deliberately much lower than
+        the main training run's ``epochs`` (80): the ablation study only
+        needs the *relative* ranking between M0–M3 to validate H1/H2/H3, not
+        a fully-converged SOTA checkpoint, and 4 variants × 80 epochs (~17-18h
+        on a Kaggle T4) would exceed a single Kaggle GPU session. Does not
+        affect ``config_train.yaml``'s ``epochs`` used by train.py.
+    variants
+        Subset of ``ABLATION_CONFIGS`` keys to run, e.g. ``["M0"]`` for a
+        smoke test. ``None`` (default) runs all of them. Does NOT mutate
+        ``ABLATION_CONFIGS`` — safe to call again afterwards with the full
+        set without needing to reset anything.
+    max_steps_per_epoch
+        Cap batches per epoch — for a quick timing/smoke test without paying
+        for a full epoch. ``None`` (default) runs the full epoch. Only meant
+        for calibration runs; leave ``None`` for the real ablation so metrics
+        are computed on the full training set.
     """
     with open(config_path, encoding="utf-8") as f:
         base_cfg = yaml.safe_load(f)
+
+    configs_to_run = {
+        k: v for k, v in ABLATION_CONFIGS.items() if variants is None or k in variants
+    }
+    if not configs_to_run:
+        raise ValueError(f"variants={variants!r} tidak cocok dengan varian mana pun. Pilihan: {list(ABLATION_CONFIGS)}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     checkpoint_base = Path(base_cfg.get("checkpoint_dir", "checkpoints"))
@@ -122,7 +142,7 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
         print(f"[INFO] Melanjutkan dari {results_path} — {len(results)} varian sudah selesai.")
     done_variants = {r["model"] for r in results}
 
-    for variant, ablation in ABLATION_CONFIGS.items():
+    for variant, ablation in configs_to_run.items():
         if variant in done_variants:
             print(f"\n[SKIP] {variant} sudah selesai sebelumnya (ada di {results_path.name}).")
             continue
@@ -203,6 +223,8 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
             num_workers=num_workers,
             collate_fn=collate_fn,
         )
+        print(f"[{variant}] {len(train_ds)} gambar train, {len(train_loader)} batch/epoch "
+              f"(batch_size={cfg.get('batch_size', 2)}, num_workers={num_workers})")
 
         # ── Resume dalam-varian ──
         # Sesi Kaggle sebelumnya sempat timeout 12 jam di tengah epoch pertama M0
@@ -224,7 +246,9 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
             running_loss = 0.0
             n_steps = 0
             pbar = tqdm(train_loader, desc=f"[{variant}] Epoch {epoch + 1}/{epochs}", ncols=90, leave=False)
-            for images, targets in pbar:
+            for step, (images, targets) in enumerate(pbar):
+                if max_steps_per_epoch is not None and step >= max_steps_per_epoch:
+                    break
                 images = [img.to(device) for img in images]
                 # DaunDataset targets also carry non-tensor fields (occlusion_level:
                 # str), so only move actual tensors — matches train.py's loop.
@@ -241,8 +265,16 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
             scheduler.step()
 
             elapsed = time.time() - epoch_start
-            print(f"[{variant}] Epoch {epoch + 1}/{epochs} selesai dalam {elapsed:.1f}s "
-                  f"(≈{elapsed * (epochs - epoch - 1) / 60:.1f} menit lagi untuk sisa epoch varian ini).")
+            per_step = elapsed / max(n_steps, 1)
+            if max_steps_per_epoch is not None:
+                full_epoch_est = per_step * len(train_loader)
+                print(f"[{variant}] {n_steps} batch (dibatasi max_steps_per_epoch) dalam {elapsed:.1f}s "
+                      f"→ ≈{per_step:.2f}s/batch, ≈{full_epoch_est:.0f}s ({full_epoch_est/60:.1f} menit) "
+                      f"per epoch PENUH ({len(train_loader)} batch), ≈{full_epoch_est*epochs/3600:.2f} jam "
+                      f"untuk {epochs} epoch varian ini.")
+            else:
+                print(f"[{variant}] Epoch {epoch + 1}/{epochs} selesai dalam {elapsed:.1f}s "
+                      f"(≈{elapsed * (epochs - epoch - 1) / 60:.1f} menit lagi untuk sisa epoch varian ini).")
             save_checkpoint(model, optimizer, scheduler, epoch, 0.0, in_progress_path)
 
         # ── Evaluate on test set ──
@@ -269,7 +301,7 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
         results_path.parent.mkdir(parents=True, exist_ok=True)
         with open(results_path, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
-        print(f"[INFO] Progres disimpan ke {results_path} ({len(results)}/{len(ABLATION_CONFIGS)} varian selesai).")
+        print(f"[INFO] Progres disimpan ke {results_path} ({len(results)}/{len(configs_to_run)} varian selesai).")
 
     # Summary table
     print("\n── Ablation Summary ──")
