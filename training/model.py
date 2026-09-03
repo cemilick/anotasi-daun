@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import OrderedDict
 from typing import TYPE_CHECKING
 
 import torch
@@ -8,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import resnet50, resnet101
 from torchvision.models.detection import MaskRCNN
+from torchvision.models.detection import roi_heads as _tv_roi_heads
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 from torchvision.models.detection.mask_rcnn import MaskRCNNHeads
 from torchvision.ops import MultiScaleRoIAlign, roi_align
@@ -18,22 +18,84 @@ if TYPE_CHECKING:
     pass
 
 
-def _project_masks_on_boxes(gt_masks: torch.Tensor, boxes: torch.Tensor, size: int) -> torch.Tensor:
+def _project_masks_on_boxes(
+    gt_masks: torch.Tensor, boxes: torch.Tensor, matched_idxs: torch.Tensor, size: int
+) -> torch.Tensor:
     """
-    Crop & resize mask GT penuh-gambar (N, H, W) menjadi target seukuran
-    (N, size, size) sesuai kotak (box) masing-masing instance, via RoIAlign
-    pada kanal mask itu sendiri.
-
-    Diimplementasikan ulang di sini (bukan memakai
-    ``torchvision.models.detection.roi_heads.project_masks_on_boxes`` yang
-    tidak didokumentasikan sebagai API publik) supaya tidak rapuh terhadap
-    perubahan versi torchvision — polanya sama persis dengan yang dipakai
-    torchvision secara internal.
+    Reimplementasi ``torchvision.models.detection.roi_heads.project_masks_on_boxes``
+    (fungsi internal, tidak didokumentasikan sebagai API publik) — crop & resize
+    mask GT penuh-gambar (N_gt, H, W) menjadi target (N_proposal, size, size)
+    sesuai box tiap proposal, via RoIAlign pada kanal mask itu sendiri.
+    ``matched_idxs[i]`` menunjuk instance GT mana yang jadi target box ke-i.
     """
-    idx = torch.arange(boxes.shape[0], device=boxes.device, dtype=boxes.dtype)
+    idx = matched_idxs.to(boxes)
     rois = torch.cat([idx[:, None], boxes], dim=1)
-    masks = gt_masks[:, None].to(rois)  # (N, 1, H, W)
+    masks = gt_masks[:, None].to(rois)  # (N_gt, 1, H, W)
     return roi_align(masks, rois, (size, size), spatial_scale=1.0)[:, 0]
+
+
+# ── Combined Loss wiring lewat monkeypatch ──────────────────────────────────
+#
+# torchvision.models.detection.roi_heads.RoIHeads.forward() memanggil
+# `maskrcnn_loss(...)` (fungsi level-modul, bukan method) untuk menghitung
+# loss_mask — BCE murni. Supaya Focal+Dice(+Boundary), Persamaan 3.4-3.7 Bab
+# III, benar-benar dipakai TANPA mem-forward mask branch dua kali (dulu:
+# sekali oleh torchvision secara internal yang dibuang, sekali lagi manual —
+# terbukti terlalu lambat, lihat catatan run ablasi yang timeout 12 jam),
+# fungsi itu di-monkeypatch di sini supaya cukup satu forward pass.
+#
+# Konteks (bobot loss & mask_head aktif) dioper lewat variabel modul
+# `_ACTIVE_COMBINED_LOSS_CTX`, di-set oleh PropDeOccNet.forward() tepat
+# sebelum memanggil `self._model(...)` dan selalu dibersihkan lagi via
+# try/finally — aman karena training berjalan sinkron, satu forward pass
+# selesai penuh sebelum yang berikutnya dimulai (tidak ada konkurensi).
+_ORIGINAL_MASKRCNN_LOSS = _tv_roi_heads.maskrcnn_loss
+_ACTIVE_COMBINED_LOSS_CTX: dict | None = None
+
+
+def _combined_maskrcnn_loss(mask_logits, proposals, gt_masks, gt_labels, mask_matched_idxs):
+    ctx = _ACTIVE_COMBINED_LOSS_CTX
+    if ctx is None:
+        return _ORIGINAL_MASKRCNN_LOSS(mask_logits, proposals, gt_masks, gt_labels, mask_matched_idxs)
+
+    labels = torch.cat([gt_label[idxs] for gt_label, idxs in zip(gt_labels, mask_matched_idxs)], dim=0)
+    mask_targets = torch.cat(
+        [
+            _project_masks_on_boxes(m, p, i, mask_logits.shape[-1])
+            for m, p, i in zip(gt_masks, proposals, mask_matched_idxs)
+        ],
+        dim=0,
+    )
+    if mask_targets.numel() == 0:
+        return mask_logits.sum() * 0
+
+    idx = torch.arange(labels.shape[0], device=labels.device)
+    pred_logits = mask_logits[idx, labels]  # (N, M, M)
+
+    weights = ctx["weights"]
+    l_focal = focal_loss(pred_logits, mask_targets)
+    l_dice = dice_loss(pred_logits, mask_targets)
+
+    l_boundary = torch.zeros((), device=mask_logits.device)
+    mask_head = ctx["mask_head"]
+    if getattr(mask_head, "boundary_head", None) is not None and mask_head.last_boundary_map is not None:
+        # last_boundary_map berasal dari mask_head(pooled) yang barusan dipanggil
+        # RoIHeads.forward() di batch proposal YANG SAMA persis (mask_logits
+        # berasal dari mask_features yang sama) — urutan barisnya taken for
+        # granted sejajar dengan pred_logits/mask_targets.
+        pred_boundary = F.interpolate(
+            mask_head.last_boundary_map, size=mask_targets.shape[-2:], mode="bilinear", align_corners=False
+        )
+        l_boundary = boundary_loss(pred_boundary, mask_targets)
+
+    return (
+        weights.get("focal", 1.0) * l_focal
+        + weights.get("dice", 1.0) * l_dice
+        + weights.get("boundary", 1.0) * l_boundary
+    )
+
+
+_tv_roi_heads.maskrcnn_loss = _combined_maskrcnn_loss
 
 
 class ASPPConv(nn.Sequential):
@@ -275,7 +337,6 @@ class PropDeOccNet(nn.Module):
         self.use_boundary_head = use_boundary_head
         self.loss_weights = loss_weights or {"focal": 1.0, "dice": 1.0, "boundary": 1.0}
         self.loss_mode = loss_mode
-        self._combined_loss_warned = False
 
     def forward(
         self,
@@ -289,94 +350,20 @@ class PropDeOccNet(nn.Module):
                 return output, []
             return {}, output
 
-        # ── Training, loss_mode="combined" ──
-        # Mereplikasi GeneralizedRCNN.forward (transform → backbone → rpn →
-        # roi_heads) secara manual supaya loss_mask bawaan torchvision (BCE
-        # murni) bisa diganti dengan Focal + Dice (+ Boundary) — Persamaan
-        # 3.4-3.7 Bab III — yang sebelumnya didefinisikan tapi tidak pernah
-        # benar-benar dipakai saat training.
+        # loss_mode="combined": aktifkan konteks supaya _combined_maskrcnn_loss
+        # (monkeypatch atas torchvision.models.detection.roi_heads.maskrcnn_loss)
+        # menghitung Focal+Dice(+Boundary) — Persamaan 3.4-3.7 Bab III — alih-alih
+        # BCE bawaan, tanpa forward pass mask branch tambahan.
+        global _ACTIVE_COMBINED_LOSS_CTX
+        _ACTIVE_COMBINED_LOSS_CTX = {
+            "weights": self.loss_weights,
+            "mask_head": self._model.roi_heads.mask_head,
+        }
         try:
-            images_t, targets_t = self._model.transform(images, targets)
-            features = self._model.backbone(images_t.tensors)
-            if isinstance(features, torch.Tensor):
-                features = OrderedDict([("0", features)])
-
-            proposals, proposal_losses = self._model.rpn(images_t, features, targets_t)
-            _, detector_losses = self._model.roi_heads(
-                features, proposals, images_t.image_sizes, targets_t
-            )
-
-            loss_dict = {}
-            loss_dict.update(proposal_losses)
-            loss_dict.update(detector_losses)
-
-            if "loss_mask" in loss_dict:
-                loss_dict["loss_mask"] = self._combined_mask_loss(features, targets_t, images_t.image_sizes)
-
-            return loss_dict, []
-        except Exception as exc:
-            if not self._combined_loss_warned:
-                print(
-                    f"[WARNING] Combined Focal+Dice+Boundary mask loss gagal dihitung "
-                    f"({exc.__class__.__name__}: {exc}) — fallback ke loss_mask BCE "
-                    f"bawaan torchvision untuk sisa training."
-                )
-                self._combined_loss_warned = True
             output = self._model(images, targets)
-            return output, []
-
-    def _combined_mask_loss(
-        self,
-        features: dict[str, torch.Tensor],
-        targets: list[dict],
-        image_shapes: list[tuple[int, int]],
-    ) -> torch.Tensor:
-        """
-        Focal + Dice (+ Boundary bila use_boundary_head aktif) mask loss,
-        dihitung langsung pada GT box sebagai ROI — bukan pada proposal RPN
-        yang di-match seperti maskrcnn_loss bawaan torchvision — supaya tidak
-        perlu mereplikasi logika IoU-matching proposal secara manual.
-        """
-        roi_heads = self._model.roi_heads
-        device = next(iter(features.values())).device
-
-        gt_boxes = [t["boxes"] for t in targets]
-        gt_masks = [t["masks"] for t in targets]
-
-        if all(b.numel() == 0 for b in gt_boxes):
-            return torch.zeros((), device=device)
-
-        pooled = roi_heads.mask_roi_pool(features, gt_boxes, image_shapes)
-        mask_features = roi_heads.mask_head(pooled)
-        mask_logits = roi_heads.mask_predictor(mask_features)  # (N, num_classes, M, M)
-
-        labels = torch.cat([t["labels"] for t in targets], dim=0)
-        idx = torch.arange(labels.shape[0], device=labels.device)
-        pred_logits = mask_logits[idx, labels]  # (N, M, M)
-
-        size = pred_logits.shape[-1]
-        mask_targets = torch.cat(
-            [_project_masks_on_boxes(m, b, size) for m, b in zip(gt_masks, gt_boxes)],
-            dim=0,
-        )
-
-        weights = self.loss_weights
-        l_focal = focal_loss(pred_logits, mask_targets)
-        l_dice = dice_loss(pred_logits, mask_targets)
-
-        l_boundary = torch.zeros((), device=device)
-        mask_head = roi_heads.mask_head
-        if getattr(mask_head, "boundary_head", None) is not None and mask_head.last_boundary_map is not None:
-            pred_boundary = F.interpolate(
-                mask_head.last_boundary_map, size=(size, size), mode="bilinear", align_corners=False
-            )
-            l_boundary = boundary_loss(pred_boundary, mask_targets)
-
-        return (
-            weights.get("focal", 1.0) * l_focal
-            + weights.get("dice", 1.0) * l_dice
-            + weights.get("boundary", 1.0) * l_boundary
-        )
+        finally:
+            _ACTIVE_COMBINED_LOSS_CTX = None
+        return output, []
 
     def parameters(self, recurse: bool = True):
         return self._model.parameters(recurse=recurse)

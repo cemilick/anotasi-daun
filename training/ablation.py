@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from pathlib import Path
 
 import torch
 import yaml
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from training.dataset import DaunDataset, collate_fn, get_train_transforms, get_val_transforms
 from training.evaluate import evaluate
@@ -163,11 +165,18 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
         )
 
         # ── DataLoaders ──
+        # Mosaic dimatikan untuk studi ablasi: (1) bukan bagian dari variabel yang
+        # dibandingkan M0-M3 (ASPP & Boundary Head saja, Tabel 3.1) sehingga tidak
+        # perlu ikut identik dengan config_train.yaml training utama; (2) biaya CPU
+        # per-sampel-nya (composite 4 gambar) terbukti jadi kontributor utama saat
+        # num_workers diturunkan untuk hindari RAM OOM (lihat run yang timeout 12
+        # jam) — mematikannya di sini menjaga ablasi tetap cukup cepat walau
+        # num_workers rendah.
         train_ds = DaunDataset(
             coco_json_path=cfg["train_json"],
             images_dir=cfg["images_dir"],
             transforms=get_train_transforms(cfg.get("image_size", 512)),
-            mosaic_prob=cfg.get("mosaic_prob", 0.3),
+            mosaic_prob=0.0,
         )
         test_ds = DaunDataset(
             coco_json_path=cfg["test_json"],
@@ -175,26 +184,47 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
             transforms=get_val_transforms(cfg.get("image_size", 512)),
             mosaic_prob=0.0,
         )
+        # Default num_workers lebih rendah daripada config_train.yaml (biasanya 4,
+        # dituning untuk sesi T4x2 ~29GB RAM) — sesi ablasi sering jalan di T4
+        # tunggal (~13GB RAM) dan rawan RAM OOM dari leak klasik PyTorch DataLoader
+        # worker kalau di-set terlalu tinggi.
+        num_workers = cfg.get("num_workers", 2)
         train_loader = DataLoader(
             train_ds,
             batch_size=cfg.get("batch_size", 2),
             shuffle=True,
-            num_workers=cfg.get("num_workers", 4),
+            num_workers=num_workers,
             collate_fn=collate_fn,
         )
         test_loader = DataLoader(
             test_ds,
             batch_size=1,
             shuffle=False,
-            num_workers=cfg.get("num_workers", 4),
+            num_workers=num_workers,
             collate_fn=collate_fn,
         )
 
+        # ── Resume dalam-varian ──
+        # Sesi Kaggle sebelumnya sempat timeout 12 jam di tengah epoch pertama M0
+        # tanpa progres tersimpan sama sekali (ablation_results.json baru ditulis
+        # setelah SEMUA epoch varian selesai). Simpan checkpoint tiap epoch supaya
+        # kalau sesi terputus lagi, varian yang sedang berjalan tidak perlu
+        # dilatih ulang dari epoch 0.
+        in_progress_path = variant_ckpt_dir / "in_progress.pth"
+        start_epoch = 0
+        if in_progress_path.exists():
+            start_epoch, _ = load_checkpoint(in_progress_path, model, optimizer, scheduler, device)
+            start_epoch += 1
+            print(f"[INFO] Melanjutkan {variant} dari epoch {start_epoch}/{epochs} ({in_progress_path}).")
+
         # ── Training ──
-        best_bf = 0.0
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             model.train()
-            for images, targets in train_loader:
+            epoch_start = time.time()
+            running_loss = 0.0
+            n_steps = 0
+            pbar = tqdm(train_loader, desc=f"[{variant}] Epoch {epoch + 1}/{epochs}", ncols=90, leave=False)
+            for images, targets in pbar:
                 images = [img.to(device) for img in images]
                 # DaunDataset targets also carry non-tensor fields (occlusion_level:
                 # str), so only move actual tensors — matches train.py's loop.
@@ -205,12 +235,21 @@ def run_ablation(config_path: str = "training/config_train.yaml", epochs: int = 
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                running_loss += total_loss.item()
+                n_steps += 1
+                pbar.set_postfix(loss=f"{running_loss / n_steps:.4f}")
             scheduler.step()
+
+            elapsed = time.time() - epoch_start
+            print(f"[{variant}] Epoch {epoch + 1}/{epochs} selesai dalam {elapsed:.1f}s "
+                  f"(≈{elapsed * (epochs - epoch - 1) / 60:.1f} menit lagi untuk sisa epoch varian ini).")
+            save_checkpoint(model, optimizer, scheduler, epoch, 0.0, in_progress_path)
 
         # ── Evaluate on test set ──
         test_metrics = evaluate(model, test_loader, device=device)
         save_checkpoint(model, optimizer, scheduler, epochs - 1, test_metrics["bf_score"],
                         variant_ckpt_dir / "best.pth")
+        in_progress_path.unlink(missing_ok=True)  # varian selesai — checkpoint sementara tidak perlu lagi
 
         result = {
             "model": variant,

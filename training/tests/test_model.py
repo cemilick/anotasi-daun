@@ -138,8 +138,10 @@ def test_use_aspp_false_replaces_aspp_with_gap_module():
 
 def test_combined_loss_mode_backward_works():
     """loss_mode='combined' (default) must actually run the Focal+Dice+Boundary
-    path (Persamaan 3.4-3.7, Bab III) — not silently fall back — and the
-    resulting loss_mask must be backprop-able end to end."""
+    path (Persamaan 3.4-3.7, Bab III) via the maskrcnn_loss monkeypatch, and
+    the resulting loss_mask must be backprop-able end to end."""
+    from training.model import _ACTIVE_COMBINED_LOSS_CTX  # noqa: F401 — sanity import
+
     model = PropDeOccNet(num_classes=2, backbone="resnet50", pretrained_backbone=False,
                          aspp_rates=[6, 12], use_boundary_head=True,
                          loss_weights={"focal": 1.0, "dice": 1.0, "boundary": 1.0})
@@ -147,23 +149,28 @@ def test_combined_loss_mode_backward_works():
     images = make_fake_images()
     targets = make_fake_targets()
     loss_dict, _ = model(images, targets)
-    assert not model._combined_loss_warned, "Combined loss path fell back to standard BCE"
     total_loss = sum(loss_dict.values())
     total_loss.backward()
     mask_grad = model._model.roi_heads.mask_predictor.mask_fcn_logits.weight.grad
     assert mask_grad is not None and torch.isfinite(mask_grad).all()
+    boundary_grad = model._model.roi_heads.mask_head.boundary_head.layers[0].weight.grad
+    assert boundary_grad is not None and torch.isfinite(boundary_grad).all(), (
+        "Boundary head got no gradient — combined loss isn't actually wiring boundary_loss in"
+    )
 
 
 def test_standard_loss_mode_matches_vanilla_maskrcnn():
     """loss_mode='standard' (M0 baseline, Tabel 3.1) must bypass the custom
     combined loss entirely and use torchvision's own loss_mask untouched."""
+    import training.model as model_module
+
     model = PropDeOccNet(num_classes=2, backbone="resnet50", pretrained_backbone=False,
                          use_aspp=False, use_boundary_head=False, loss_mode="standard")
     model.train()
     images = make_fake_images()
     targets = make_fake_targets()
     loss_dict, _ = model(images, targets)
-    assert not model._combined_loss_warned
+    assert model_module._ACTIVE_COMBINED_LOSS_CTX is None, "standard mode must not leave combined-loss context armed"
     required_keys = {"loss_classifier", "loss_box_reg", "loss_mask", "loss_objectness", "loss_rpn_box_reg"}
     assert required_keys.issubset(loss_dict.keys())
 
