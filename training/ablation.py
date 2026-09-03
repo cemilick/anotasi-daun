@@ -93,6 +93,7 @@ def run_ablation(
     epochs: int = 20,
     variants: list[str] | None = None,
     max_steps_per_epoch: int | None = None,
+    results_suffix: str = "",
 ) -> None:
     """
     Train and evaluate ablation variants (M0–M3) sequentially.
@@ -117,6 +118,12 @@ def run_ablation(
         for a full epoch. ``None`` (default) runs the full epoch. Only meant
         for calibration runs; leave ``None`` for the real ablation so metrics
         are computed on the full training set.
+    results_suffix
+        Appended to ``ablation_results.json`` -> ``ablation_results<suffix>.json``.
+        Use a distinct suffix per process when running two ``run_ablation()``
+        calls concurrently on separate GPUs (e.g. one per ``CUDA_VISIBLE_DEVICES``)
+        — otherwise both processes read-modify-write the SAME json file and
+        one process's results silently clobber the other's.
     """
     with open(config_path, encoding="utf-8") as f:
         base_cfg = yaml.safe_load(f)
@@ -129,7 +136,7 @@ def run_ablation(
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     checkpoint_base = Path(base_cfg.get("checkpoint_dir", "checkpoints"))
-    results_path = checkpoint_base / "ablation_results.json"
+    results_path = checkpoint_base / f"ablation_results{results_suffix}.json"
 
     # Resume support: a Kaggle session can be killed mid-run (time limit / GPU
     # quota) between variants, with no Python exception to catch. Rather than
@@ -311,7 +318,29 @@ def run_ablation(
 
 
 if __name__ == "__main__":
-    import sys
-    config = sys.argv[1] if len(sys.argv) > 1 else "training/config_train.yaml"
-    epochs = int(sys.argv[2]) if len(sys.argv) > 2 else 20
-    run_ablation(config, epochs=epochs)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Studi ablasi Prop-DeOccNet (M0-M3)")
+    parser.add_argument("config", nargs="?", default="training/config_train.yaml")
+    parser.add_argument("epochs", nargs="?", type=int, default=20)
+    parser.add_argument(
+        "--variants", default=None,
+        help="Subset varian dipisah koma, mis. 'M0,M1' — buat jalankan 2 varian per "
+             "GPU secara paralel (lihat CUDA_VISIBLE_DEVICES). Default: semua varian.",
+    )
+    parser.add_argument(
+        "--results-suffix", default="",
+        help="Akhiran nama file ablation_results<suffix>.json — WAJIB beda per proses "
+             "kalau run_ablation dijalankan paralel di >1 GPU sekaligus, supaya tidak "
+             "saling menimpa file hasil yang sama.",
+    )
+    parser.add_argument("--max-steps-per-epoch", type=int, default=None)
+    args = parser.parse_args()
+
+    run_ablation(
+        args.config,
+        epochs=args.epochs,
+        variants=args.variants.split(",") if args.variants else None,
+        max_steps_per_epoch=args.max_steps_per_epoch,
+        results_suffix=args.results_suffix,
+    )
