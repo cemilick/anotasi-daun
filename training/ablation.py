@@ -216,12 +216,18 @@ def run_ablation(
         # tunggal (~13GB RAM) dan rawan RAM OOM dari leak klasik PyTorch DataLoader
         # worker kalau di-set terlalu tinggi.
         num_workers = cfg.get("num_workers", 2)
+        # persistent_workers=True: worker TIDAK di-fork ulang tiap epoch baru.
+        # Crash "DataLoader worker exited unexpectedly" yang terjadi persis di
+        # batas epoch (epoch 1 selesai normal, lalu crash begitu epoch 2 mulai)
+        # adalah gejala klasik RAM menumpuk tiap kali worker baru di-fork —
+        # mempertahankan worker yang sama menghindari re-fork itu sama sekali.
         train_loader = DataLoader(
             train_ds,
             batch_size=cfg.get("batch_size", 2),
             shuffle=True,
             num_workers=num_workers,
             collate_fn=collate_fn,
+            persistent_workers=num_workers > 0,
         )
         test_loader = DataLoader(
             test_ds,
@@ -229,6 +235,7 @@ def run_ablation(
             shuffle=False,
             num_workers=num_workers,
             collate_fn=collate_fn,
+            persistent_workers=num_workers > 0,
         )
         print(f"[{variant}] {len(train_ds)} gambar train, {len(train_loader)} batch/epoch "
               f"(batch_size={cfg.get('batch_size', 2)}, num_workers={num_workers})")
